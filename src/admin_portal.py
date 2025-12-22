@@ -547,7 +547,7 @@ def dashboard():
 
   <!-- Microphone Mute Status -->
   {% if mute_status.has_hardware_mute %}
-  <div class="mute-banner {{ 'mute-active' if mute_status.is_muted else 'mute-inactive' }}">
+  <div id="mute-banner" class="mute-banner {{ 'mute-active' if mute_status.is_muted else 'mute-inactive' }}">
     <div class="mute-icon">{{ '🔇' if mute_status.is_muted else '🎙️' }}</div>
     <div class="mute-text">
       <strong>Microphone {{ 'Muted' if mute_status.is_muted else 'Active' }}</strong>
@@ -795,6 +795,33 @@ new Chart(hourlyCtx, {
     }
   }
 });
+
+// Auto-refresh mute status every 2 seconds
+function updateMuteStatus() {
+  fetch('/api/mute-status')
+    .then(r => r.json())
+    .then(data => {
+      const banner = document.getElementById('mute-banner');
+      if (!banner && data.has_hardware_mute) {
+        // Need to create banner - reload page
+        location.reload();
+        return;
+      }
+      if (banner) {
+        if (!data.has_hardware_mute) {
+          banner.style.display = 'none';
+          return;
+        }
+        banner.style.display = 'flex';
+        banner.className = 'mute-banner ' + (data.is_muted ? 'mute-active' : 'mute-inactive');
+        banner.querySelector('.mute-icon').textContent = data.is_muted ? '🔇' : '🎙️';
+        banner.querySelector('.mute-text strong').textContent = 'Microphone ' + (data.is_muted ? 'Muted' : 'Active');
+        banner.querySelector('.mute-text span').textContent = data.is_muted ? 'Wake word detection paused' : 'Listening for wake word';
+      }
+    })
+    .catch(e => console.log('Mute status fetch error:', e));
+}
+setInterval(updateMuteStatus, 2000);
 </script>
 """,
         services=services,
