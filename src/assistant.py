@@ -20,6 +20,74 @@ from ollama_client import OllamaClient
 from audio_devices import check_audio_is_silent, write_mute_state
 import time
 
+
+class PersistentAudioStream:
+    """Manages a persistent arecord process to prevent device open/close from resetting Jabra mute state."""
+    
+    def __init__(self, device, sample_rate=16000, channels=1):
+        self.device = device
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.process = None
+        self._start_stream()
+    
+    def _start_stream(self):
+        """Start the persistent arecord process."""
+        if self.process is not None:
+            self._stop_stream()
+        
+        cmd = [
+            'arecord',
+            '-D', self.device,
+            '-f', 'S16_LE',
+            '-r', str(self.sample_rate),
+            '-c', str(self.channels),
+            '-t', 'raw',
+            '-q',
+            '--buffer-size=8192',
+        ]
+        self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        print(f"Started persistent audio stream on {self.device}", flush=True)
+    
+    def _stop_stream(self):
+        """Stop the persistent arecord process."""
+        if self.process:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+            self.process = None
+    
+    def read_chunk(self, duration_seconds):
+        """Read a chunk of audio data from the stream.
+        
+        Args:
+            duration_seconds: How many seconds of audio to read
+            
+        Returns:
+            Raw PCM bytes
+        """
+        if self.process is None or self.process.poll() is not None:
+            print("Audio stream died, restarting...", flush=True)
+            self._start_stream()
+        
+        # Calculate bytes needed: sample_rate * channels * 2 bytes per sample * duration
+        bytes_needed = int(self.sample_rate * self.channels * 2 * duration_seconds)
+        
+        try:
+            raw_bytes = self.process.stdout.read(bytes_needed)
+            return raw_bytes
+        except Exception as e:
+            print(f"Error reading from audio stream: {e}", flush=True)
+            self._start_stream()
+            return b'\x00' * bytes_needed
+    
+    def close(self):
+        """Close the audio stream."""
+        self._stop_stream()
+
+
 class VoiceAssistant:
     def __init__(self):
         # Initialize text-to-speech engine
@@ -54,6 +122,13 @@ class VoiceAssistant:
             )
         
         print(f"Using audio device: {self.audio_device}", flush=True)
+        
+        # Initialize persistent audio stream to prevent Jabra mute reset on device open
+        self._audio_stream = PersistentAudioStream(
+            self.audio_device, 
+            sample_rate=self.audio_sample_rate,
+            channels=self.audio_channels
+        )
         
         # Hardware mute state tracking with hysteresis
         self._last_mute_state = False
@@ -248,37 +323,26 @@ class VoiceAssistant:
             return False
 
     def _record_audio(self):
-        """Record audio using arecord directly to memory (no disk writes).
+        """Record audio from persistent stream (prevents Jabra mute reset).
         
         Returns:
             Tuple of (audio_samples, raw_bytes) - numpy array and raw PCM bytes
         """
-        duration = int(self.audio_record_seconds)
+        duration = self.audio_record_seconds
         samplerate = self.audio_sample_rate
 
-        print(f"Listening... (recording {duration}s)", flush=True)
+        print(f"Listening... (recording {int(duration)}s)", flush=True)
         
         try:
-            # Record directly to stdout as raw PCM (no disk write)
-            cmd = [
-                'arecord',
-                '-D', self.audio_device,
-                '-f', 'S16_LE',
-                '-r', str(samplerate),
-                '-c', '1',
-                '-d', str(duration),
-                '-t', 'raw',  # raw PCM output
-                '-q',
-            ]
-            result = subprocess.run(cmd, capture_output=True, check=True)
-            raw_bytes = result.stdout
+            # Read from persistent audio stream
+            raw_bytes = self._audio_stream.read_chunk(duration)
             
             # Convert raw PCM bytes to float32 numpy array
             audio_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
             audio = audio_int16.astype(np.float32) / 32768.0
             return audio, raw_bytes
-        except subprocess.CalledProcessError as e:
-            print(f"Recording error: {e.stderr.decode() if e.stderr else e}", flush=True)
+        except Exception as e:
+            print(f"Recording error: {e}", flush=True)
             return np.zeros(int(duration * samplerate), dtype='float32'), b''
 
     def _transcribe_local(self, audio_samples: np.ndarray) -> str:
