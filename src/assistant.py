@@ -19,6 +19,132 @@ from history_store import record_query
 from ollama_client import OllamaClient
 from audio_devices import check_audio_is_silent, write_mute_state
 import time
+import threading
+from collections import deque
+
+
+class PersistentAudioStream:
+    """Keeps arecord running continuously to prevent Jabra mute reset on device open."""
+    
+    def __init__(self, device, sample_rate=16000, channels=1):
+        self.device = device
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.bytes_per_sample = 2  # S16_LE = 2 bytes
+        self.bytes_per_second = sample_rate * channels * self.bytes_per_sample
+        
+        self._process = None
+        self._buffer = deque()
+        self._buffer_lock = threading.Lock()
+        self._reader_thread = None
+        self._running = False
+        
+        self._start()
+    
+    def _start(self):
+        """Start the persistent arecord process and reader thread."""
+        self._running = True
+        
+        cmd = [
+            'arecord',
+            '-D', self.device,
+            '-f', 'S16_LE',
+            '-r', str(self.sample_rate),
+            '-c', str(self.channels),
+            '-t', 'raw',
+            '-q',
+        ]
+        self._process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=self.bytes_per_second  # 1 second buffer
+        )
+        
+        # Start background thread to continuously read from arecord
+        self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+        self._reader_thread.start()
+        
+        print(f"Started persistent audio stream on {self.device}", flush=True)
+    
+    def _reader_loop(self):
+        """Background thread that continuously reads from arecord into buffer."""
+        chunk_size = self.bytes_per_second // 10  # Read 100ms chunks
+        
+        while self._running and self._process and self._process.poll() is None:
+            try:
+                data = self._process.stdout.read(chunk_size)
+                if data:
+                    with self._buffer_lock:
+                        self._buffer.append(data)
+                        # Keep only last 10 seconds in buffer
+                        max_chunks = 100  # 10 seconds at 100ms chunks
+                        while len(self._buffer) > max_chunks:
+                            self._buffer.popleft()
+            except Exception as e:
+                print(f"Audio reader error: {e}", flush=True)
+                break
+        
+        # Process died, try to restart
+        if self._running:
+            print("Audio stream died, restarting...", flush=True)
+            time.sleep(0.5)
+            self._start()
+    
+    def read_seconds(self, duration):
+        """Read specified duration of audio from buffer.
+        
+        Args:
+            duration: Seconds of audio to read
+            
+        Returns:
+            Raw PCM bytes
+        """
+        bytes_needed = int(duration * self.bytes_per_second)
+        
+        # Wait for enough data (with timeout)
+        timeout = duration + 2  # Allow extra time
+        start = time.time()
+        
+        while time.time() - start < timeout:
+            with self._buffer_lock:
+                total_buffered = sum(len(chunk) for chunk in self._buffer)
+                if total_buffered >= bytes_needed:
+                    # Collect bytes from buffer
+                    result = b''
+                    while len(result) < bytes_needed and self._buffer:
+                        chunk = self._buffer.popleft()
+                        result += chunk
+                    
+                    # If we got too much, put excess back
+                    if len(result) > bytes_needed:
+                        excess = result[bytes_needed:]
+                        result = result[:bytes_needed]
+                        self._buffer.appendleft(excess)
+                    
+                    return result
+            
+            time.sleep(0.05)  # Wait 50ms before checking again
+        
+        # Timeout - return what we have, padded with silence
+        with self._buffer_lock:
+            result = b''.join(self._buffer)
+            self._buffer.clear()
+        
+        if len(result) < bytes_needed:
+            result += b'\x00' * (bytes_needed - len(result))
+        
+        return result[:bytes_needed]
+    
+    def stop(self):
+        """Stop the audio stream."""
+        self._running = False
+        if self._process:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=2)
+            except:
+                self._process.kill()
 
 
 class VoiceAssistant:
@@ -55,6 +181,13 @@ class VoiceAssistant:
             )
         
         print(f"Using audio device: {self.audio_device}", flush=True)
+        
+        # Initialize persistent audio stream (keeps device open to prevent Jabra mute reset)
+        self._audio_stream = PersistentAudioStream(
+            self.audio_device,
+            sample_rate=self.audio_sample_rate,
+            channels=1  # Jabra only supports mono
+        )
         
         # Hardware mute state tracking with hysteresis
         self._last_mute_state = False
@@ -249,30 +382,19 @@ class VoiceAssistant:
             return False
 
     def _record_audio(self):
-        """Record audio using arecord directly to memory (no disk writes).
+        """Record audio from persistent stream (keeps device open to prevent Jabra mute reset).
         
         Returns:
             Tuple of (audio_samples, raw_bytes) - numpy array and raw PCM bytes
         """
-        duration = int(self.audio_record_seconds)
+        duration = self.audio_record_seconds
         samplerate = self.audio_sample_rate
 
-        print(f"Listening... (recording {duration}s)", flush=True)
+        print(f"Listening... (recording {int(duration)}s)", flush=True)
         
         try:
-            # Record directly to stdout as raw PCM (no disk write)
-            cmd = [
-                'arecord',
-                '-D', self.audio_device,
-                '-f', 'S16_LE',
-                '-r', str(samplerate),
-                '-c', '1',
-                '-d', str(duration),
-                '-t', 'raw',
-                '-q',
-            ]
-            result = subprocess.run(cmd, capture_output=True, check=True)
-            raw_bytes = result.stdout
+            # Read from persistent audio stream (device stays open)
+            raw_bytes = self._audio_stream.read_seconds(duration)
             
             # Convert raw PCM bytes to float32 numpy array
             audio_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
