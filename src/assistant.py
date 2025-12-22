@@ -9,6 +9,7 @@ from openai import OpenAI
 import json
 import tempfile
 import subprocess
+import re
 
 import numpy as np
 import soundfile as sf
@@ -519,6 +520,8 @@ class VoiceAssistant:
             
             # Skip transcription if audio is just background noise (save CPU)
             if not check_audio_has_speech(raw_bytes):
+                amp = get_audio_amplitude(raw_bytes)
+                print(f"Skipping transcription (low speech energy) max_amp={amp}", flush=True)
                 return False, None
             
             text = self._transcribe(audio_samples)
@@ -528,19 +531,17 @@ class VoiceAssistant:
             
             text_lower = text.lower()
             print(f"Heard: {text_lower}", flush=True)
+
+            # Normalize transcription/wake word to handle variations like "jet son" vs "jetson"
+            normalized_text = re.sub(r'[^a-z0-9]+', '', text_lower)
+            normalized_wake = re.sub(r'[^a-z0-9]+', '', self.wake_word.lower())
             
             # Check if wake word is in the transcription
-            if self.wake_word in text_lower:
-                print(f"Wake word '{self.wake_word}' detected!", flush=True)
-                
-                # Extract any command that follows the wake word
-                wake_idx = text_lower.find(self.wake_word)
-                trailing = text_lower[wake_idx + len(self.wake_word):].strip()
-                # Remove common filler words/punctuation at the start
-                trailing = trailing.lstrip('.,!? ')
-                
-                if trailing and len(trailing) > 2:
-                    print(f"Trailing command: {trailing}", flush=True)
+            if self.wake_word in text_lower or (normalized_wake and normalized_wake in normalized_text):
+                # Found wake word - extract trailing command if present
+                parts = text_lower.split(self.wake_word, 1)
+                trailing = parts[1].strip() if len(parts) > 1 else None
+                if trailing:
                     return True, trailing
                 return True, None
             return False, None
