@@ -319,6 +319,12 @@ class VoiceAssistant:
         tts_provider = getattr(self, 'tts_provider', 'gtts')
         tts_lang = getattr(self, 'tts_language', 'en')
         tts_speed = getattr(self, 'tts_speed', 150)
+
+        # pyttsx3 does not reliably allow selecting an ALSA output device.
+        # If a specific ALSA device is configured, use the espeak->aplay path.
+        if tts_provider == 'pyttsx3' and play_device != 'default':
+            self._speak_espeak(text, play_device, tts_lang, tts_speed)
+            return
         
         # Try the configured provider first
         if tts_provider == 'gtts':
