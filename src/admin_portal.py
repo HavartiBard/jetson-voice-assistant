@@ -9,7 +9,7 @@ from datetime import datetime
 
 from settings_store import load_settings, save_settings, RECOMMENDED_OLLAMA_MODELS, OPENAI_MODELS, TTS_PROVIDERS
 from history_store import get_stats_history, get_query_history, record_stats, clear_query_history, get_query_analytics
-from audio_devices import get_audio_input_devices, get_audio_output_devices
+from audio_devices import get_audio_input_devices, get_audio_output_devices, get_mute_status
 from ollama_client import OllamaClient, check_ollama_status
 
 # Reload signal file path
@@ -515,6 +515,11 @@ def dashboard():
         _check_audio_devices(),
     ]
     
+    # Get microphone mute status
+    settings = load_settings()
+    audio_input_device = settings.get('audio_input_device', 'default')
+    mute_status = get_mute_status(audio_input_device)
+    
     # System metrics
     vm = psutil.virtual_memory()
     du = psutil.disk_usage("/")
@@ -539,6 +544,17 @@ def dashboard():
       <span>Uptime: {{ jetson_stats.uptime }}</span>
     </div>
   </div>
+
+  <!-- Microphone Mute Status -->
+  {% if mute_status.has_hardware_mute %}
+  <div class="mute-banner {{ 'mute-active' if mute_status.is_muted else 'mute-inactive' }}">
+    <div class="mute-icon">{{ '🔇' if mute_status.is_muted else '🎙️' }}</div>
+    <div class="mute-text">
+      <strong>Microphone {{ 'Muted' if mute_status.is_muted else 'Active' }}</strong>
+      <span>{{ 'Wake word detection paused' if mute_status.is_muted else 'Listening for wake word' }}</span>
+    </div>
+  </div>
+  {% endif %}
 
   <!-- Service Status Grid -->
   <div class="card">
@@ -679,6 +695,25 @@ def dashboard():
   .health-text strong { font-size: 1.2rem; }
   .health-text span { color: var(--text-secondary); font-size: 0.9rem; }
   
+  .mute-banner {
+    display: flex; align-items: center; gap: 16px;
+    padding: 16px 24px; border-radius: 12px;
+  }
+  .mute-active {
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.15) 0%, rgba(239, 68, 68, 0.05) 100%);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+  }
+  .mute-inactive {
+    background: linear-gradient(135deg, rgba(34, 197, 94, 0.1) 0%, rgba(34, 197, 94, 0.02) 100%);
+    border: 1px solid rgba(34, 197, 94, 0.2);
+  }
+  .mute-icon { font-size: 28px; }
+  .mute-text { display: flex; flex-direction: column; }
+  .mute-text strong { font-size: 1.1rem; }
+  .mute-active .mute-text strong { color: var(--danger); }
+  .mute-inactive .mute-text strong { color: var(--success); }
+  .mute-text span { color: var(--text-secondary); font-size: 0.85rem; }
+  
   .service-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
   .service-item {
     display: flex; align-items: center; gap: 12px;
@@ -764,6 +799,7 @@ new Chart(hourlyCtx, {
 """,
         services=services,
         health_status=health_status,
+        mute_status=mute_status,
         vm=vm,
         du=du,
         cpu_percent=cpu_percent,
@@ -1551,6 +1587,15 @@ def api_stats():
     })
 
 
+@app.get("/api/mute-status")
+def api_mute_status():
+    """JSON endpoint for microphone mute status."""
+    settings = load_settings()
+    audio_input_device = settings.get('audio_input_device', 'default')
+    mute_status = get_mute_status(audio_input_device)
+    return jsonify(mute_status)
+
+
 @app.get("/api/dashboard")
 def api_dashboard():
     """JSON endpoint for dashboard live updates."""
@@ -1562,6 +1607,11 @@ def api_dashboard():
         _check_internet(),
         _check_audio_devices(),
     ]
+    
+    # Get microphone mute status
+    settings = load_settings()
+    audio_input_device = settings.get('audio_input_device', 'default')
+    mute_status = get_mute_status(audio_input_device)
     
     # System metrics
     vm = psutil.virtual_memory()
@@ -1578,6 +1628,7 @@ def api_dashboard():
     return jsonify({
         "services": services,
         "health": "healthy" if all_ok else "degraded",
+        "mute_status": mute_status,
         "system": {
             "cpu": cpu_percent,
             "memory": vm.percent,

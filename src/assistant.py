@@ -17,6 +17,7 @@ from faster_whisper import WhisperModel
 from settings_store import load_settings
 from history_store import record_query
 from ollama_client import OllamaClient
+from audio_devices import check_hardware_mute
 import time
 
 class VoiceAssistant:
@@ -53,6 +54,10 @@ class VoiceAssistant:
             )
         
         print(f"Using audio device: {self.audio_device}", flush=True)
+        
+        # Hardware mute state tracking
+        self._last_mute_state = False
+        self._mute_announced = False
         
         # Greeting message
         self.speak("Hello! I'm your Jetson Voice Assistant. How can I help you today?")
@@ -108,6 +113,32 @@ class VoiceAssistant:
                     self.speak(f"Wake word changed to {self.wake_word}")
             except Exception as e:
                 print(f"Error reloading settings: {e}", flush=True)
+    
+    def check_hardware_mute_status(self):
+        """Check hardware mute button state and handle state changes.
+        
+        Returns:
+            bool: True if microphone is currently muted, False otherwise
+        """
+        has_mute, is_muted = check_hardware_mute(self.audio_device)
+        
+        if not has_mute:
+            # Device doesn't have hardware mute, always return False
+            return False
+        
+        # Detect state changes
+        if is_muted and not self._last_mute_state:
+            # Just became muted
+            print("Hardware mute activated - pausing wake word detection", flush=True)
+            if not self._mute_announced:
+                self._mute_announced = True
+        elif not is_muted and self._last_mute_state:
+            # Just became unmuted
+            print("Hardware mute deactivated - resuming wake word detection", flush=True)
+            self._mute_announced = False
+        
+        self._last_mute_state = is_muted
+        return is_muted
     
     def _find_usb_alsa_device(self):
         """Auto-detect USB audio ALSA device (returns hw:X,0 string)"""
@@ -479,9 +510,25 @@ def main():
     
     # Main loop with wake word detection
     running = True
+    was_muted = False
     while running:
         # Check for settings reload signal
         assistant.check_reload()
+        
+        # Check hardware mute button - pause listening if muted
+        is_muted = assistant.check_hardware_mute_status()
+        if is_muted:
+            if not was_muted:
+                print("Microphone muted - waiting for unmute...", flush=True)
+                was_muted = True
+            # Sleep briefly to avoid busy-waiting while muted
+            time.sleep(0.5)
+            continue
+        
+        if was_muted:
+            # Just unmuted - announce resumption
+            print(f"Microphone unmuted - listening for wake word '{assistant.wake_word}'...", flush=True)
+            was_muted = False
         
         # Wait for wake word (may include trailing command)
         detected, trailing_command = assistant.listen_for_wake_word()
