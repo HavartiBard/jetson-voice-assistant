@@ -55,9 +55,10 @@ class VoiceAssistant:
         
         print(f"Using audio device: {self.audio_device}", flush=True)
         
-        # Hardware mute state tracking
+        # Hardware mute state tracking with hysteresis
         self._last_mute_state = False
         self._mute_announced = False
+        self._mute_counter = 0  # Counter for hysteresis
         
         # Greeting message
         self.speak("Hello! I'm your Jetson Voice Assistant. How can I help you today?")
@@ -117,25 +118,42 @@ class VoiceAssistant:
     def check_and_update_mute_status(self, audio_data: bytes) -> bool:
         """Check if audio is silent (hardware muted) and update state.
         
+        Uses hysteresis to prevent flapping - requires 3 consecutive
+        readings in the same direction before changing state.
+        
         Args:
             audio_data: Raw PCM audio bytes from recording
             
         Returns:
             bool: True if microphone is currently muted (silent audio)
         """
-        is_muted = check_audio_is_silent(audio_data)
+        is_silent = check_audio_is_silent(audio_data)
+        
+        # Hysteresis: require 3 consecutive readings to change state
+        HYSTERESIS_COUNT = 3
+        
+        if is_silent and not self._last_mute_state:
+            # Currently unmuted, seeing silent audio
+            self._mute_counter += 1
+            if self._mute_counter >= HYSTERESIS_COUNT:
+                self._last_mute_state = True
+                self._mute_counter = 0
+                print("Hardware mute detected - audio is silent", flush=True)
+        elif not is_silent and self._last_mute_state:
+            # Currently muted, seeing active audio
+            self._mute_counter += 1
+            if self._mute_counter >= HYSTERESIS_COUNT:
+                self._last_mute_state = False
+                self._mute_counter = 0
+                print("Hardware unmute detected - audio is active", flush=True)
+        else:
+            # State matches reading, reset counter
+            self._mute_counter = 0
         
         # Write state for portal to read
-        write_mute_state(is_muted)
+        write_mute_state(self._last_mute_state)
         
-        # Detect state changes
-        if is_muted and not self._last_mute_state:
-            print("Hardware mute detected - audio is silent", flush=True)
-        elif not is_muted and self._last_mute_state:
-            print("Hardware unmute detected - audio is active", flush=True)
-        
-        self._last_mute_state = is_muted
-        return is_muted
+        return self._last_mute_state
     
     def _find_usb_alsa_device(self):
         """Auto-detect USB audio ALSA device (returns hw:X,0 string)"""
