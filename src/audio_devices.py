@@ -123,37 +123,24 @@ def check_hardware_mute(device_id: str) -> Tuple[bool, bool]:
         #   ; type=BOOLEAN,access=rw------,values=1
         #   : values=on
         
-        current_control = None
-        has_capture_switch = False
-        is_muted = False
+        lines = output.split('\n')
         
-        for line in output.split('\n'):
-            if 'name=' in line and 'Capture Switch' in line:
-                current_control = 'capture_switch'
-                has_capture_switch = True
-            elif current_control == 'capture_switch' and ': values=' in line:
-                # Check if value is 'off' (muted) or 'on' (unmuted)
-                values_part = line.split(': values=')[1].strip()
-                # Could be "off" or "on" or "off,off" for stereo
-                is_muted = 'off' in values_part.lower()
-                break
+        # Look for capture switch controls - various naming patterns:
+        # - "Capture Switch"
+        # - "Headset Capture Switch"  
+        # - "Mic Capture Switch"
+        # - Any control with both "Capture" and "Switch" in the name
+        for i, line in enumerate(lines):
+            if 'name=' in line and 'Capture' in line and 'Switch' in line:
+                # Found a capture switch control, now find its value
+                for j in range(i + 1, min(i + 5, len(lines))):
+                    if ': values=' in lines[j]:
+                        values_part = lines[j].split(': values=')[1].strip()
+                        # 'off' = muted, 'on' = unmuted
+                        is_muted = 'off' in values_part.lower()
+                        return True, is_muted
         
-        if has_capture_switch:
-            return True, is_muted
-        
-        # Alternative: Check for "Auto Mute Mode" or device-specific mute controls
-        # Some USB devices use different control names
-        for line in output.split('\n'):
-            # Jabra devices often have 'Mic Playback Switch' or similar
-            if 'name=' in line and ('Mute' in line or 'Mic' in line) and 'Switch' in line:
-                current_control = 'alt_mute'
-                has_capture_switch = True
-            elif current_control == 'alt_mute' and ': values=' in line:
-                values_part = line.split(': values=')[1].strip()
-                is_muted = 'off' in values_part.lower()
-                break
-        
-        return has_capture_switch, is_muted
+        return False, False
         
     except subprocess.TimeoutExpired:
         print("Timeout checking hardware mute status")
