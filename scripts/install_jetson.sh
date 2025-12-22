@@ -13,6 +13,17 @@ if [[ ! -d "${APP_DIR}" ]]; then
   exit 1
 fi
 
+# Install system dependencies
+echo "Installing system dependencies..."
+sudo apt-get update
+sudo apt-get install -y \
+  python3-venv \
+  portaudio19-dev \
+  espeak \
+  ffmpeg \
+  alsa-utils
+
+# Create virtual environment and install Python packages
 python3 -m venv "${APP_DIR}/venv"
 "${APP_DIR}/venv/bin/pip" install --upgrade pip
 "${APP_DIR}/venv/bin/pip" install -r "${APP_DIR}/requirements.txt"

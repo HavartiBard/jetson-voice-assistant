@@ -1,24 +1,28 @@
 # Jetson Voice Assistant
 
-A customizable voice assistant designed specifically for the NVIDIA Jetson Nano. This assistant can understand voice commands, answer questions, tell jokes, search the web, and more.
+A customizable voice assistant designed specifically for the NVIDIA Jetson Nano/Orin. This assistant uses wake word detection, local Whisper speech recognition, and natural text-to-speech.
 
 ## Features
 
-- 🎙️ Voice recognition using Whisper
-- 🔊 Text-to-speech conversion
+- 🎙️ **Wake word activation** - Say "jetson" to activate
+- 🗣️ **Local speech recognition** using faster-whisper (runs on-device)
+- 🔊 **Natural text-to-speech** using Google TTS (with espeak fallback)
 - ⏰ Time and date information
 - 😄 Tells jokes
 - 🌍 Web search capabilities
-- 💬 General conversation using OpenAI's GPT-3.5
+- 💬 General conversation using OpenAI GPT (optional)
+- 🌐 **Admin web portal** for configuration and monitoring
+- 📊 **System stats** with historical graphs
+- 📝 **Query history** tracking
 - 🔌 Extensible command system
 
 ## Prerequisites
 
-- NVIDIA Jetson Nano with JetPack 4.6 or later
-- Python 3.6+
-- Microphone (USB or built-in)
-- Speaker or audio output device
-- OpenAI API key (for advanced features)
+- NVIDIA Jetson Nano/Orin with JetPack
+- Python 3.10+
+- USB microphone/speaker (e.g., Jabra SPEAK 510)
+- Internet connection (for Google TTS and OpenAI features)
+- OpenAI API key (optional, for GPT conversation)
 
 ## Installation
 
@@ -34,24 +38,24 @@ A customizable voice assistant designed specifically for the NVIDIA Jetson Nano.
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
 
-3. **Install dependencies**
+3. **Install system dependencies**
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y python3-venv portaudio19-dev espeak ffmpeg alsa-utils
+   ```
+
+4. **Install Python dependencies**
    ```bash
    pip install -r requirements.txt
    ```
-   
-   For Jetson Nano, you might need to install some dependencies manually:
-   ```bash
-   sudo apt-get install portaudio19-dev
-   pip install pyaudio
-   ```
 
-4. **Set up environment variables**
+5. **Set up environment variables**
    ```bash
    cp .env.example .env
    nano .env  # Edit the file with your settings
    ```
    
-   Make sure to add your OpenAI API key to the `.env` file.
+   OpenAI API key is optional - set it in the admin portal or `.env` for GPT features.
 
 ## Usage
 
@@ -105,11 +109,17 @@ bash ~/jetson-voice-assistant/scripts/update_jetson.sh
 
 ### Voice Commands
 
-- "What time is it?" - Get the current time
-- "What's today's date?" - Get the current date
-- "Tell me a joke" - Hear a random joke
-- "Search for [query]" - Search the web
-- "Goodbye" - Exit the assistant
+1. Say **"jetson"** (wake word) to activate the assistant
+2. Wait for "Yes?" response
+3. Give your command:
+   - "What time is it?" - Get the current time
+   - "What's today's date?" - Get the current date
+   - "Tell me a joke" - Hear a random joke
+   - "Search for [query]" - Search the web
+   - "Hello" / "Hi" - Greeting
+   - "Thank you" - Acknowledgment
+   - "Goodbye" - Exit the assistant
+   - Any other question - Uses OpenAI GPT (if configured)
 
 ## Customization
 
@@ -117,9 +127,30 @@ You can extend the assistant by adding new commands to the `process_command` met
 
 ## Troubleshooting
 
-- **Microphone not working**: Check if your microphone is properly connected and selected as the default input device.
-- **Speech recognition issues**: Ensure you have a stable internet connection as the assistant uses Google's Speech Recognition service.
-- **Performance issues**: The Jetson Nano might struggle with heavy processing. Try closing other applications to free up resources.
+- **Microphone not detected**: Check USB connection. List devices with `arecord -l`
+- **No audio output**: Verify speaker with `aplay -D plughw:2,0 /usr/share/sounds/alsa/Front_Center.wav`
+- **Wake word not detected**: Speak clearly, check logs with `journalctl -u voice-assistant -f`
+- **TTS not working**: Ensure internet connection (gTTS requires it) or espeak will be used as fallback
+- **OpenAI errors**: Check API key in admin portal, verify billing at platform.openai.com
+
+### Useful Commands
+
+```bash
+# View assistant logs
+journalctl -u voice-assistant -f
+
+# View portal logs  
+journalctl -u voice-assistant-portal -f
+
+# Restart services
+sudo systemctl restart voice-assistant voice-assistant-portal
+
+# Test microphone
+arecord -D hw:2,0 -f S16_LE -r 16000 -c 1 -d 3 test.wav
+
+# Test speaker
+aplay -D plughw:2,0 test.wav
+```
 
 ## License
 
@@ -127,8 +158,9 @@ This project is open source and available under the MIT License.
 
 ## Acknowledgments
 
-- Google Speech Recognition
-- OpenAI GPT-3.5
-- PyAudio
-- pyttsx3
-- pyjokes
+- [faster-whisper](https://github.com/guillaumekln/faster-whisper) - Local speech recognition
+- [gTTS](https://github.com/pndurette/gTTS) - Google Text-to-Speech
+- [OpenAI](https://openai.com/) - GPT conversation
+- [Flask](https://flask.palletsprojects.com/) - Admin portal
+- [Chart.js](https://www.chartjs.org/) - Stats visualization
+- [pyjokes](https://github.com/pyjokes/pyjokes) - Jokes

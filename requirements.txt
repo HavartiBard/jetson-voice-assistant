@@ -1,9 +1,8 @@
 numpy>=1.19.5
-sounddevice>=0.4.4
 scipy>=1.5.4
 pyttsx3>=2.90
 python-dotenv>=0.19.0
-openai>=0.27.0
+openai>=1.0.0
 pyaudio>=0.2.11
 nltk>=3.6.3
 requests>=2.26.0
@@ -12,3 +11,4 @@ soundfile>=0.12.1
 faster-whisper>=0.10.0
 flask>=2.2.5
 psutil>=5.9.8
+gTTS>=2.5.0
