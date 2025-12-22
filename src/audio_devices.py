@@ -89,6 +89,89 @@ def get_card_number_from_device(device_id: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+def _find_input_mute_led_path(device_name_hint: Optional[str] = None) -> Optional[str]:
+    """Find a sysfs LED path for a device mute indicator.
+
+    This supports devices like the Jabra SPEAK 510, which expose mute state
+    via an input LED (e.g., /sys/class/leds/input11::mute/brightness).
+
+    Args:
+        device_name_hint: Optional case-insensitive substring to match against the
+            associated input device name (from /sys/class/input/inputX/device/name).
+
+    Returns:
+        Path to a LED directory (e.g., /sys/class/leds/input11::mute) or None.
+    """
+    leds_dir = '/sys/class/leds'
+    if not os.path.isdir(leds_dir):
+        return None
+
+    candidates: List[str] = []
+    try:
+        for entry in os.listdir(leds_dir):
+            if not entry.endswith('::mute'):
+                continue
+            led_path = os.path.join(leds_dir, entry)
+            brightness_path = os.path.join(led_path, 'brightness')
+            if os.path.isfile(brightness_path):
+                candidates.append(led_path)
+    except Exception:
+        return None
+
+    if not candidates:
+        return None
+
+    if not device_name_hint:
+        return candidates[0]
+
+    hint = device_name_hint.strip().lower()
+    for led_path in candidates:
+        # Try to map led -> input device name via sysfs
+        # /sys/class/leds/input11::mute/device typically links to /sys/class/input/input11
+        try:
+            dev_link = os.path.join(led_path, 'device')
+            real = os.path.realpath(dev_link)
+            # real path might end with .../input/input11
+            if '/sys/class/input/' in real:
+                input_dir = real
+            else:
+                input_dir = None
+
+            if input_dir:
+                name_path = os.path.join(input_dir, 'device', 'name')
+                if os.path.isfile(name_path):
+                    with open(name_path, 'r') as f:
+                        name = (f.read() or '').strip().lower()
+                    if hint in name:
+                        return led_path
+        except Exception:
+            continue
+
+    return candidates[0]
+
+
+def read_hardware_mute_led(device_name_hint: Optional[str] = None) -> Tuple[bool, bool]:
+    """Read hardware mute state from an input LED (if available).
+
+    Args:
+        device_name_hint: Optional case-insensitive substring to match against
+            input device name (e.g., "jabra").
+
+    Returns:
+        Tuple of (has_led_mute, is_muted)
+    """
+    led_path = _find_input_mute_led_path(device_name_hint=device_name_hint)
+    if not led_path:
+        return False, False
+
+    try:
+        with open(os.path.join(led_path, 'brightness'), 'r') as f:
+            brightness = int((f.read() or '0').strip())
+        return True, brightness > 0
+    except Exception:
+        return False, False
+
+
 # Mute state file path - written by assistant, read by portal
 MUTE_STATE_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

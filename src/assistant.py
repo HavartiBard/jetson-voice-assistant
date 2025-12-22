@@ -17,7 +17,7 @@ from faster_whisper import WhisperModel
 from settings_store import load_settings
 from history_store import record_query
 from ollama_client import OllamaClient
-from audio_devices import check_audio_is_silent, check_audio_has_speech, write_mute_state
+from audio_devices import check_audio_is_silent, check_audio_has_speech, read_hardware_mute_led, write_mute_state
 import time
 import threading
 from collections import deque
@@ -250,19 +250,31 @@ class VoiceAssistant:
                 print(f"Error reloading settings: {e}", flush=True)
     
     def check_and_update_mute_status(self, audio_data: bytes) -> bool:
-        """Check if audio is silent (hardware muted) and update state.
-        
-        Uses hysteresis to prevent flapping - requires 2 consecutive
-        readings in the same direction before changing state.
-        
+        """Check if microphone is hardware muted and update state.
+
+        Prefer a deterministic hardware indicator (e.g., input LED mute state).
+        Fall back to audio-silence heuristics when no hardware indicator exists.
+
         Args:
             audio_data: Raw PCM audio bytes from recording
             
         Returns:
-            bool: True if microphone is currently muted (silent audio)
+            bool: True if microphone is currently muted
         """
+        has_led_mute, is_led_muted = read_hardware_mute_led(device_name_hint='jabra')
+        if has_led_mute:
+            if is_led_muted != self._last_mute_state:
+                self._last_mute_state = is_led_muted
+                print(
+                    f"Hardware {'mute' if is_led_muted else 'unmute'} detected - device LED state",
+                    flush=True,
+                )
+            self._mute_counter = 0
+            write_mute_state(self._last_mute_state)
+            return self._last_mute_state
+
         is_silent = check_audio_is_silent(audio_data)
-        
+
         # Hysteresis: require 2 consecutive readings to change state
         HYSTERESIS_COUNT = 2
         
