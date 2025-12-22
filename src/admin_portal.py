@@ -58,6 +58,14 @@ def settings():
   <form method="post" action="{{ url_for('save_settings_route') }}">
     <div class="row">
       <div>
+        <label for="openai_api_key">OpenAI API Key</label>
+        <input id="openai_api_key" name="openai_api_key" type="password" value="{{ s.get('openai_api_key', '') }}" placeholder="sk-..." />
+        <div class="muted">Required for GPT chat fallback and Whisper API mode. <a href="https://platform.openai.com/api-keys" target="_blank">Get one here</a></div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
         <label for="wake_word">Wake word</label>
         <input id="wake_word" name="wake_word" value="{{ s['wake_word'] }}" />
         <div class="muted">Used for future wake-word gating. Current assistant loop still records fixed windows.</div>
@@ -134,7 +142,12 @@ def save_settings_route():
 
     current = load_settings()
 
+    # For API key, keep existing if form field is empty (masked)
+    api_key_from_form = request.form.get("openai_api_key", "").strip()
+    api_key = api_key_from_form if api_key_from_form else current.get("openai_api_key", "")
+
     new_settings = {
+        "openai_api_key": api_key,
         "wake_word": (request.form.get("wake_word") or current["wake_word"]).strip(),
         "whisper_mode": (request.form.get("whisper_mode") or current["whisper_mode"]).strip().lower(),
         "whisper_model_size": (request.form.get("whisper_model_size") or current["whisper_model_size"]).strip(),

@@ -28,9 +28,11 @@ class VoiceAssistant:
         
         # Load environment variables
         load_dotenv()
-        openai.api_key = os.getenv('OPENAI_API_KEY')
-
+        
         settings = load_settings()
+        
+        # OpenAI API key: settings takes priority, then .env
+        openai.api_key = settings.get('openai_api_key') or os.getenv('OPENAI_API_KEY')
         self.wake_word = (os.getenv('WAKE_WORD') or settings.get('wake_word') or 'jetson').strip().lower()
 
         self.whisper_mode = (os.getenv('WHISPER_MODE') or settings.get('whisper_mode') or 'local').strip().lower()
