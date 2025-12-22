@@ -17,7 +17,7 @@ from faster_whisper import WhisperModel
 from settings_store import load_settings
 from history_store import record_query
 from ollama_client import OllamaClient
-from audio_devices import check_audio_is_silent, write_mute_state
+from audio_devices import check_audio_is_silent, check_audio_has_speech, write_mute_state
 import time
 import threading
 from collections import deque
@@ -451,6 +451,10 @@ class VoiceAssistant:
             is_muted = self.check_and_update_mute_status(raw_bytes)
             if is_muted:
                 # Audio is silent - device is muted, skip transcription
+                return False, None
+            
+            # Skip transcription if audio is just background noise (save CPU)
+            if not check_audio_has_speech(raw_bytes):
                 return False, None
             
             text = self._transcribe(audio_samples)

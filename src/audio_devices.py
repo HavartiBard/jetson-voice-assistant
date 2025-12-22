@@ -96,18 +96,17 @@ MUTE_STATE_FILE = os.path.join(
 )
 
 
-def check_audio_is_silent(audio_bytes: bytes, threshold: int = 200) -> bool:
-    """Check if audio data is essentially silent (hardware muted).
+def get_audio_amplitude(audio_bytes: bytes) -> int:
+    """Get the maximum amplitude from audio data.
     
     Args:
         audio_bytes: Raw PCM audio data (S16_LE format)
-        threshold: Max amplitude below which audio is considered silent
         
     Returns:
-        True if audio is silent/muted
+        Maximum amplitude value (0-32767)
     """
     if len(audio_bytes) < 100:
-        return False
+        return 0
     
     num_samples = len(audio_bytes) // 2
     max_amplitude = 0
@@ -120,7 +119,36 @@ def check_audio_is_silent(audio_bytes: bytes, threshold: int = 200) -> bool:
         except struct.error:
             break
     
-    return max_amplitude < threshold
+    return max_amplitude
+
+
+def check_audio_is_silent(audio_bytes: bytes, threshold: int = 200) -> bool:
+    """Check if audio data is essentially silent (hardware muted).
+    
+    Args:
+        audio_bytes: Raw PCM audio data (S16_LE format)
+        threshold: Max amplitude below which audio is considered silent
+        
+    Returns:
+        True if audio is silent/muted
+    """
+    return get_audio_amplitude(audio_bytes) < threshold
+
+
+def check_audio_has_speech(audio_bytes: bytes, threshold: int = 500) -> bool:
+    """Check if audio likely contains speech worth transcribing.
+    
+    Uses a higher threshold than mute detection to filter out
+    background noise and save CPU by skipping transcription.
+    
+    Args:
+        audio_bytes: Raw PCM audio data (S16_LE format)
+        threshold: Min amplitude to consider as potential speech
+        
+    Returns:
+        True if audio likely contains speech
+    """
+    return get_audio_amplitude(audio_bytes) >= threshold
 
 
 def write_mute_state(is_muted: bool):
