@@ -123,29 +123,26 @@ class VoiceAssistant:
         # Try gTTS first (natural Google voice, requires internet)
         try:
             from gtts import gTTS
-            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
-                tts = gTTS(text=text, lang='en', slow=False)
-                tts.save(f.name)
-                # Convert mp3 to wav and play through Jabra
-                # Use ffmpeg if available, otherwise mpg123
-                try:
-                    subprocess.run(
-                        ['ffmpeg', '-i', f.name, '-f', 'wav', '-acodec', 'pcm_s16le', '-ar', '48000', '-'],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
-                    )
-                    # ffmpeg available, use it
-                    ffmpeg = subprocess.Popen(
-                        ['ffmpeg', '-i', f.name, '-f', 'wav', '-acodec', 'pcm_s16le', '-ar', '48000', '-'],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE
-                    )
-                    aplay = subprocess.Popen(['aplay', '-D', play_device, '-q'], stdin=ffmpeg.stdout, stderr=subprocess.PIPE)
-                    ffmpeg.stdout.close()
-                    aplay.communicate()
-                except FileNotFoundError:
-                    # No ffmpeg, try mpg123 to play mp3 directly
-                    subprocess.run(['mpg123', '-a', play_device, '-q', f.name], check=True)
-                os.unlink(f.name)
-                return
+            import io
+            
+            # Generate MP3 to memory buffer (no disk write)
+            mp3_buffer = io.BytesIO()
+            tts = gTTS(text=text, lang='en', slow=False)
+            tts.write_to_fp(mp3_buffer)
+            mp3_buffer.seek(0)
+            
+            # Pipe MP3 through ffmpeg to convert to WAV, then to aplay
+            # ffmpeg reads from stdin (pipe:0) instead of file
+            ffmpeg = subprocess.Popen(
+                ['ffmpeg', '-i', 'pipe:0', '-f', 'wav', '-acodec', 'pcm_s16le', '-ar', '48000', 'pipe:1'],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            aplay = subprocess.Popen(['aplay', '-D', play_device, '-q'], stdin=ffmpeg.stdout, stderr=subprocess.PIPE)
+            ffmpeg.stdout.close()
+            ffmpeg.stdin.write(mp3_buffer.read())
+            ffmpeg.stdin.close()
+            aplay.communicate()
+            return
         except Exception as e:
             print(f"gTTS error (falling back to espeak): {e}", flush=True)
         
@@ -161,17 +158,14 @@ class VoiceAssistant:
             print(f"TTS error: {e}", flush=True)
 
     def _record_audio(self):
-        """Record audio using arecord and return float32 mono samples."""
+        """Record audio using arecord directly to memory (no disk writes)."""
         duration = int(self.audio_record_seconds)
         samplerate = self.audio_sample_rate
 
         print(f"Listening... (recording {duration}s)", flush=True)
         
-        # Use arecord for reliable USB audio capture
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
-            tmp_path = f.name
-        
         try:
+            # Record directly to stdout as raw PCM (no disk write)
             cmd = [
                 'arecord',
                 '-D', self.audio_device,
@@ -179,49 +173,43 @@ class VoiceAssistant:
                 '-r', str(samplerate),
                 '-c', '1',
                 '-d', str(duration),
-                '-q',  # quiet
-                tmp_path
+                '-t', 'raw',  # raw PCM output
+                '-q',
             ]
-            subprocess.run(cmd, check=True, capture_output=True)
+            result = subprocess.run(cmd, capture_output=True, check=True)
             
-            # Read the recorded audio
-            audio, sr = sf.read(tmp_path, dtype='float32')
+            # Convert raw PCM bytes to float32 numpy array
+            audio_int16 = np.frombuffer(result.stdout, dtype=np.int16)
+            audio = audio_int16.astype(np.float32) / 32768.0
             return audio
         except subprocess.CalledProcessError as e:
             print(f"Recording error: {e.stderr.decode() if e.stderr else e}", flush=True)
             return np.zeros(int(duration * samplerate), dtype='float32')
-        finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
 
     def _transcribe_local(self, audio_samples: np.ndarray) -> str:
-        # faster-whisper expects a file path or numpy audio; file path is simplest.
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=True) as f:
-            sf.write(f.name, audio_samples, self.audio_sample_rate)
-            segments, info = self._whisper_model.transcribe(
-                f.name,
-                language=self.whisper_language or None,
-                vad_filter=True,
-            )
-            text = "".join(seg.text for seg in segments).strip()
-            return text
+        # faster-whisper accepts numpy arrays directly (no disk write needed)
+        segments, info = self._whisper_model.transcribe(
+            audio_samples,
+            language=self.whisper_language or None,
+            vad_filter=True,
+        )
+        text = "".join(seg.text for seg in segments).strip()
+        return text
 
     def _transcribe_api(self, audio_samples: np.ndarray) -> str:
-        # Writes a temp wav and sends to OpenAI Whisper.
-        # NOTE: requires OPENAI_API_KEY.
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=True) as f:
-            sf.write(f.name, audio_samples, self.audio_sample_rate)
-            with open(f.name, 'rb') as audio_file:
-                # openai-python older versions use Audio.transcribe; newer use client.audio.transcriptions
-                # Keep compatible with current dependency pinned in requirements.
-                result = openai.Audio.transcribe(
-                    model='whisper-1',
-                    file=audio_file,
-                    language=self.whisper_language or None,
-                )
-                if isinstance(result, dict):
-                    return (result.get('text') or '').strip()
-                return (getattr(result, 'text', '') or '').strip()
+        # Use BytesIO to avoid disk writes
+        import io
+        buffer = io.BytesIO()
+        sf.write(buffer, audio_samples, self.audio_sample_rate, format='WAV')
+        buffer.seek(0)
+        buffer.name = 'audio.wav'  # OpenAI API needs a filename
+        
+        result = self.openai_client.audio.transcriptions.create(
+            model='whisper-1',
+            file=buffer,
+            language=self.whisper_language or None,
+        )
+        return (result.text or '').strip()
     
     def _transcribe(self, audio_samples):
         """Transcribe audio samples to text."""
