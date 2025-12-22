@@ -252,7 +252,7 @@ class VoiceAssistant:
     def check_and_update_mute_status(self, audio_data: bytes) -> bool:
         """Check if audio is silent (hardware muted) and update state.
         
-        Uses hysteresis to prevent flapping - requires 3 consecutive
+        Uses hysteresis to prevent flapping - requires 2 consecutive
         readings in the same direction before changing state.
         
         Args:
@@ -263,8 +263,8 @@ class VoiceAssistant:
         """
         is_silent = check_audio_is_silent(audio_data)
         
-        # Hysteresis: require 3 consecutive readings to change state
-        HYSTERESIS_COUNT = 3
+        # Hysteresis: require 2 consecutive readings to change state
+        HYSTERESIS_COUNT = 2
         
         if is_silent and not self._last_mute_state:
             # Currently unmuted, seeing silent audio
