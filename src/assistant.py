@@ -17,7 +17,7 @@ from faster_whisper import WhisperModel
 from settings_store import load_settings
 from history_store import record_query
 from ollama_client import OllamaClient
-from audio_devices import check_hardware_mute
+from audio_devices import check_audio_is_silent, write_mute_state
 import time
 
 class VoiceAssistant:
@@ -114,28 +114,25 @@ class VoiceAssistant:
             except Exception as e:
                 print(f"Error reloading settings: {e}", flush=True)
     
-    def check_hardware_mute_status(self):
-        """Check hardware mute button state and handle state changes.
+    def check_and_update_mute_status(self, audio_data: bytes) -> bool:
+        """Check if audio is silent (hardware muted) and update state.
         
+        Args:
+            audio_data: Raw PCM audio bytes from recording
+            
         Returns:
-            bool: True if microphone is currently muted, False otherwise
+            bool: True if microphone is currently muted (silent audio)
         """
-        has_mute, is_muted = check_hardware_mute(self.audio_device)
+        is_muted = check_audio_is_silent(audio_data)
         
-        if not has_mute:
-            # Device doesn't have hardware mute, always return False
-            return False
+        # Write state for portal to read
+        write_mute_state(is_muted)
         
         # Detect state changes
         if is_muted and not self._last_mute_state:
-            # Just became muted
-            print("Hardware mute activated - pausing wake word detection", flush=True)
-            if not self._mute_announced:
-                self._mute_announced = True
+            print("Hardware mute detected - audio is silent", flush=True)
         elif not is_muted and self._last_mute_state:
-            # Just became unmuted
-            print("Hardware mute deactivated - resuming wake word detection", flush=True)
-            self._mute_announced = False
+            print("Hardware unmute detected - audio is active", flush=True)
         
         self._last_mute_state = is_muted
         return is_muted
@@ -233,7 +230,11 @@ class VoiceAssistant:
             return False
 
     def _record_audio(self):
-        """Record audio using arecord directly to memory (no disk writes)."""
+        """Record audio using arecord directly to memory (no disk writes).
+        
+        Returns:
+            Tuple of (audio_samples, raw_bytes) - numpy array and raw PCM bytes
+        """
         duration = int(self.audio_record_seconds)
         samplerate = self.audio_sample_rate
 
@@ -252,14 +253,15 @@ class VoiceAssistant:
                 '-q',
             ]
             result = subprocess.run(cmd, capture_output=True, check=True)
+            raw_bytes = result.stdout
             
             # Convert raw PCM bytes to float32 numpy array
-            audio_int16 = np.frombuffer(result.stdout, dtype=np.int16)
+            audio_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
             audio = audio_int16.astype(np.float32) / 32768.0
-            return audio
+            return audio, raw_bytes
         except subprocess.CalledProcessError as e:
             print(f"Recording error: {e.stderr.decode() if e.stderr else e}", flush=True)
-            return np.zeros(int(duration * samplerate), dtype='float32')
+            return np.zeros(int(duration * samplerate), dtype='float32'), b''
 
     def _transcribe_local(self, audio_samples: np.ndarray) -> str:
         # faster-whisper accepts numpy arrays directly (no disk write needed)
@@ -299,9 +301,17 @@ class VoiceAssistant:
         If user says "apple what time is it", returns (True, "what time is it")
         If user just says "apple", returns (True, None)
         If no wake word, returns (False, None)
+        If muted (silent audio), returns (False, None) and updates mute state
         """
         try:
-            audio_samples = self._record_audio()
+            audio_samples, raw_bytes = self._record_audio()
+            
+            # Check for hardware mute (silent audio) and update state for portal
+            is_muted = self.check_and_update_mute_status(raw_bytes)
+            if is_muted:
+                # Audio is silent - device is muted, skip transcription
+                return False, None
+            
             text = self._transcribe(audio_samples)
             
             if not text:
@@ -333,7 +343,11 @@ class VoiceAssistant:
         """Listen for a command after wake word detected."""
         try:
             self.speak("Yes?")
-            audio_samples = self._record_audio()
+            audio_samples, raw_bytes = self._record_audio()
+            
+            # Update mute state for portal
+            self.check_and_update_mute_status(raw_bytes)
+            
             text = self._transcribe(audio_samples)
 
             if not text:
@@ -350,7 +364,11 @@ class VoiceAssistant:
     def listen(self):
         """Legacy listen method - records and transcribes."""
         try:
-            audio_samples = self._record_audio()
+            audio_samples, raw_bytes = self._record_audio()
+            
+            # Update mute state for portal
+            self.check_and_update_mute_status(raw_bytes)
+            
             text = self._transcribe(audio_samples)
             if text:
                 print(f"You said: {text}", flush=True)
@@ -510,27 +528,12 @@ def main():
     
     # Main loop with wake word detection
     running = True
-    was_muted = False
     while running:
         # Check for settings reload signal
         assistant.check_reload()
         
-        # Check hardware mute button - pause listening if muted
-        is_muted = assistant.check_hardware_mute_status()
-        if is_muted:
-            if not was_muted:
-                print("Microphone muted - waiting for unmute...", flush=True)
-                was_muted = True
-            # Sleep briefly to avoid busy-waiting while muted
-            time.sleep(0.5)
-            continue
-        
-        if was_muted:
-            # Just unmuted - announce resumption
-            print(f"Microphone unmuted - listening for wake word '{assistant.wake_word}'...", flush=True)
-            was_muted = False
-        
         # Wait for wake word (may include trailing command)
+        # Mute detection happens inside listen_for_wake_word via audio level check
         detected, trailing_command = assistant.listen_for_wake_word()
         if detected:
             # Use trailing command if present, otherwise listen for new command

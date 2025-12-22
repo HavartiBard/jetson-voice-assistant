@@ -1,6 +1,10 @@
 """Audio device detection utilities."""
 import subprocess
 import re
+import os
+import json
+import time
+import struct
 from typing import List, Dict, Optional, Tuple
 
 
@@ -85,69 +89,82 @@ def get_card_number_from_device(device_id: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def check_hardware_mute(device_id: str) -> Tuple[bool, bool]:
-    """Check if the microphone has a hardware mute button and its current state.
+# Mute state file path - written by assistant, read by portal
+MUTE_STATE_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'config', '.mute_state'
+)
+
+
+def check_audio_is_silent(audio_bytes: bytes, threshold: int = 100) -> bool:
+    """Check if audio data is essentially silent (hardware muted).
     
     Args:
-        device_id: ALSA device ID like 'hw:2,0'
+        audio_bytes: Raw PCM audio data (S16_LE format)
+        threshold: Max amplitude below which audio is considered silent
         
     Returns:
-        Tuple of (has_mute_button, is_muted)
-        - has_mute_button: True if the device has a hardware mute control
-        - is_muted: True if currently muted (only valid if has_mute_button is True)
+        True if audio is silent/muted
     """
-    card_num = get_card_number_from_device(device_id)
-    if card_num is None:
-        return False, False
+    if len(audio_bytes) < 100:
+        return False
     
+    num_samples = len(audio_bytes) // 2
+    max_amplitude = 0
+    
+    # Check sampled values to speed up detection
+    for i in range(0, min(num_samples, 1000), 10):
+        try:
+            sample = struct.unpack('<h', audio_bytes[i*2:(i*2)+2])[0]
+            max_amplitude = max(max_amplitude, abs(sample))
+        except struct.error:
+            break
+    
+    return max_amplitude < threshold
+
+
+def write_mute_state(is_muted: bool):
+    """Write mute state to file for portal to read."""
     try:
-        # Query amixer for capture controls on this card
-        result = subprocess.run(
-            ['amixer', '-c', card_num, 'contents'],
-            capture_output=True, text=True, timeout=5
-        )
-        
-        if result.returncode != 0:
-            return False, False
-        
-        # Look for capture switch controls
-        # Common patterns:
-        # - "Capture Switch" - generic capture mute
-        # - "Mic Capture Switch" - microphone specific
-        # - "Input Source Capture Switch" - input mute
-        output = result.stdout
-        
-        # Parse amixer contents output
-        # Format is like:
-        # numid=X,iface=MIXER,name='Capture Switch'
-        #   ; type=BOOLEAN,access=rw------,values=1
-        #   : values=on
-        
-        lines = output.split('\n')
-        
-        # Look for capture switch controls - various naming patterns:
-        # - "Capture Switch"
-        # - "Headset Capture Switch"  
-        # - "Mic Capture Switch"
-        # - Any control with both "Capture" and "Switch" in the name
-        for i, line in enumerate(lines):
-            if 'name=' in line and 'Capture' in line and 'Switch' in line:
-                # Found a capture switch control, now find its value
-                for j in range(i + 1, min(i + 5, len(lines))):
-                    if ': values=' in lines[j]:
-                        values_part = lines[j].split(': values=')[1].strip()
-                        # 'off' = muted, 'on' = unmuted
-                        is_muted = 'off' in values_part.lower()
-                        return True, is_muted
-        
-        return False, False
-        
-    except subprocess.TimeoutExpired:
-        print("Timeout checking hardware mute status")
-        return False, False
+        os.makedirs(os.path.dirname(MUTE_STATE_FILE), exist_ok=True)
+        with open(MUTE_STATE_FILE, 'w') as f:
+            json.dump({'is_muted': is_muted, 'timestamp': time.time()}, f)
     except Exception as e:
-        print(f"Error checking hardware mute: {e}")
+        print(f"Error writing mute state: {e}")
+
+
+def read_mute_state() -> Tuple[bool, bool]:
+    """Read mute state from file written by assistant.
+    
+    Returns:
+        Tuple of (has_state, is_muted)
+    """
+    try:
+        if os.path.exists(MUTE_STATE_FILE):
+            with open(MUTE_STATE_FILE, 'r') as f:
+                data = json.load(f)
+                # Check if state is recent (within last 10 seconds)
+                if time.time() - data.get('timestamp', 0) < 10:
+                    return True, data.get('is_muted', False)
         return False, False
+    except Exception:
+        return False, False
+
+
+def check_hardware_mute(device_id: str) -> Tuple[bool, bool]:
+    """Check mute status by reading state file written by assistant.
+    
+    The assistant detects mute by monitoring audio levels during recording
+    and writes the state to a file. This avoids conflicts with the assistant's
+    audio recording.
+    
+    Args:
+        device_id: ALSA device ID (not used, kept for API compatibility)
+        
+    Returns:
+        Tuple of (has_mute_detection, is_muted)
+    """
+    return read_mute_state()
 
 
 def get_mute_status(device_id: str) -> Dict:
