@@ -57,27 +57,32 @@ class VoiceAssistant:
         self.speak("Hello! I'm your Jetson Voice Assistant. How can I help you today?")
     
     def _load_settings(self):
-        """Load or reload settings from config file."""
+        """Load or reload settings from config file. Settings.json takes priority over .env."""
         settings = load_settings()
         
-        # OpenAI API key: settings takes priority, then .env
+        # Settings.json takes priority over .env for portal-configurable settings
         api_key = settings.get('openai_api_key') or os.getenv('OPENAI_API_KEY')
         self.openai_client = OpenAI(api_key=api_key) if api_key else None
-        self.wake_word = (os.getenv('WAKE_WORD') or settings.get('wake_word') or 'jetson').strip().lower()
-
-        self.whisper_mode = (os.getenv('WHISPER_MODE') or settings.get('whisper_mode') or 'local').strip().lower()
-        self.whisper_model_size = (os.getenv('WHISPER_MODEL_SIZE') or settings.get('whisper_model_size') or 'small').strip()
-        self.whisper_language = (os.getenv('WHISPER_LANGUAGE') or settings.get('whisper_language') or 'en').strip()
-
-        self.audio_sample_rate = int(os.getenv('AUDIO_SAMPLE_RATE') or settings.get('audio_sample_rate') or 16000)
-        self.audio_channels = int(os.getenv('AUDIO_CHANNELS') or settings.get('audio_channels') or 1)
-        self.audio_record_seconds = float(os.getenv('AUDIO_RECORD_SECONDS') or settings.get('audio_record_seconds') or 4)
         
-        # Audio device for arecord (ALSA hw device like "hw:2,0")
-        if not hasattr(self, 'audio_device') or not self.audio_device:
-            self.audio_device = os.getenv('AUDIO_DEVICE') or settings.get('audio_device') or self._find_usb_alsa_device()
+        # Wake word from settings (portal) takes priority
+        self.wake_word = (settings.get('wake_word') or os.getenv('WAKE_WORD') or 'jetson').strip().lower()
+
+        self.whisper_mode = (settings.get('whisper_mode') or os.getenv('WHISPER_MODE') or 'local').strip().lower()
+        self.whisper_model_size = (settings.get('whisper_model_size') or os.getenv('WHISPER_MODEL_SIZE') or 'small').strip()
+        self.whisper_language = (settings.get('whisper_language') or os.getenv('WHISPER_LANGUAGE') or 'en').strip()
+
+        self.audio_sample_rate = int(settings.get('audio_sample_rate') or os.getenv('AUDIO_SAMPLE_RATE') or 16000)
+        self.audio_channels = int(settings.get('audio_channels') or os.getenv('AUDIO_CHANNELS') or 1)
+        self.audio_record_seconds = float(settings.get('audio_record_seconds') or os.getenv('AUDIO_RECORD_SECONDS') or 4)
         
-        print(f"Settings loaded: wake_word='{self.wake_word}'", flush=True)
+        # Audio devices (input/output)
+        self.audio_input_device = settings.get('audio_input_device') or self._find_usb_alsa_device()
+        self.audio_output_device = settings.get('audio_output_device') or self.audio_input_device.replace('hw:', 'plughw:') if self.audio_input_device else 'default'
+        
+        # For backward compatibility
+        self.audio_device = self.audio_input_device
+        
+        print(f"Settings loaded: wake_word='{self.wake_word}', input='{self.audio_input_device}', output='{self.audio_output_device}'", flush=True)
     
     def check_reload(self):
         """Check if settings reload was requested and reload if needed."""
@@ -113,7 +118,7 @@ class VoiceAssistant:
     def speak(self, text):
         """Convert text to speech using gTTS (natural voice) with espeak fallback"""
         print(f"Assistant: {text}", flush=True)
-        play_device = self.audio_device.replace('hw:', 'plughw:')
+        play_device = self.audio_output_device if hasattr(self, 'audio_output_device') else 'default'
         
         # Try gTTS first (natural Google voice, requires internet)
         try:

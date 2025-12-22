@@ -6,6 +6,7 @@ from datetime import datetime
 
 from settings_store import load_settings, save_settings
 from history_store import get_stats_history, get_query_history, record_stats, clear_query_history
+from audio_devices import get_audio_input_devices, get_audio_output_devices
 
 # Reload signal file path
 RELOAD_SIGNAL_PATH = os.path.join(
@@ -472,11 +473,34 @@ def settings():
       </div>
     </div>
 
+    <div class="form-group">
+      <div class="form-row">
+        <div>
+          <label for="audio_input_device">Input Device (Microphone)</label>
+          <select id="audio_input_device" name="audio_input_device">
+            {% for dev in input_devices %}
+            <option value="{{ dev.id }}" {% if s.get('audio_input_device')==dev.id %}selected{% endif %}>{{ dev.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="audio_output_device">Output Device (Speaker)</label>
+          <select id="audio_output_device" name="audio_output_device">
+            {% for dev in output_devices %}
+            <option value="{{ dev.id }}" {% if s.get('audio_output_device')==dev.id %}selected{% endif %}>{{ dev.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+    </div>
+
     <button type="submit">💾 Save Settings</button>
   </form>
 </div>
 """,
         s=s,
+        input_devices=get_audio_input_devices(),
+        output_devices=get_audio_output_devices(),
     )
 
     return render_template_string(BASE_TEMPLATE, title="Settings | Jetson Assistant", body=body, flash=request.args.get("ok"), active_page="settings")
@@ -503,13 +527,15 @@ def save_settings_route():
 
     new_settings = {
         "openai_api_key": api_key,
-        "wake_word": (request.form.get("wake_word") or current["wake_word"]).strip(),
-        "whisper_mode": (request.form.get("whisper_mode") or current["whisper_mode"]).strip().lower(),
-        "whisper_model_size": (request.form.get("whisper_model_size") or current["whisper_model_size"]).strip(),
-        "whisper_language": (request.form.get("whisper_language") or current["whisper_language"]).strip(),
-        "audio_record_seconds": _to_float(request.form.get("audio_record_seconds"), current["audio_record_seconds"]),
-        "audio_sample_rate": _to_int(request.form.get("audio_sample_rate"), current["audio_sample_rate"]),
-        "audio_channels": _to_int(request.form.get("audio_channels"), current["audio_channels"]),
+        "wake_word": (request.form.get("wake_word") or current.get("wake_word", "jetson")).strip(),
+        "whisper_mode": (request.form.get("whisper_mode") or current.get("whisper_mode", "local")).strip().lower(),
+        "whisper_model_size": (request.form.get("whisper_model_size") or current.get("whisper_model_size", "small")).strip(),
+        "whisper_language": (request.form.get("whisper_language") or current.get("whisper_language", "en")).strip(),
+        "audio_record_seconds": _to_float(request.form.get("audio_record_seconds"), current.get("audio_record_seconds", 4)),
+        "audio_sample_rate": _to_int(request.form.get("audio_sample_rate"), current.get("audio_sample_rate", 16000)),
+        "audio_channels": _to_int(request.form.get("audio_channels"), current.get("audio_channels", 1)),
+        "audio_input_device": request.form.get("audio_input_device") or current.get("audio_input_device", ""),
+        "audio_output_device": request.form.get("audio_output_device") or current.get("audio_output_device", ""),
     }
 
     save_settings(new_settings)
