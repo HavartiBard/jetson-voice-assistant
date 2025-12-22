@@ -19,9 +19,7 @@ from history_store import record_query
 from ollama_client import OllamaClient
 from audio_devices import (
     check_audio_has_speech,
-    check_audio_is_silent,
     get_audio_amplitude,
-    read_hardware_mute_led,
     write_mute_state,
 )
 import time
@@ -259,8 +257,9 @@ class VoiceAssistant:
     def check_and_update_mute_status(self, audio_data: bytes) -> bool:
         """Check if microphone is hardware muted and update state.
 
-        Prefer a deterministic hardware indicator (e.g., input LED mute state).
-        Fall back to audio-silence heuristics when no hardware indicator exists.
+        For Jabra, hardware mute produces literal zero audio samples.
+        Uses a small hysteresis: 2 consecutive zero-amplitude windows to mute,
+        and 1 non-zero window to unmute.
 
         Args:
             audio_data: Raw PCM audio bytes from recording
@@ -268,39 +267,26 @@ class VoiceAssistant:
         Returns:
             bool: True if microphone is currently muted
         """
-        has_led_mute, is_led_muted = read_hardware_mute_led(device_name_hint='jabra')
-        if has_led_mute:
-            if is_led_muted != self._last_mute_state:
-                self._last_mute_state = is_led_muted
-                print(
-                    f"Hardware {'mute' if is_led_muted else 'unmute'} detected - device LED state",
-                    flush=True,
-                )
-            self._mute_counter = 0
-            write_mute_state(self._last_mute_state)
-            return self._last_mute_state
+        amp = get_audio_amplitude(audio_data)
 
-        is_silent = check_audio_is_silent(audio_data)
-
-        # Hysteresis: require 2 consecutive readings to change state
-        HYSTERESIS_COUNT = 2
-        
-        if is_silent and not self._last_mute_state:
-            # Currently unmuted, seeing silent audio
-            self._mute_counter += 1
-            if self._mute_counter >= HYSTERESIS_COUNT:
-                self._last_mute_state = True
+        # Jabra mute produces literal zeros. Use a small hysteresis:
+        # - Mute: 2 consecutive zero-amplitude windows
+        # - Unmute: 1 non-zero window
+        if amp == 0:
+            if not self._last_mute_state:
+                self._mute_counter += 1
+                if self._mute_counter >= 2:
+                    self._last_mute_state = True
+                    self._mute_counter = 0
+                    print("Hardware mute detected - amplitude is 0", flush=True)
+            else:
+                # already muted
                 self._mute_counter = 0
-                print("Hardware mute detected - audio is silent", flush=True)
-        elif not is_silent and self._last_mute_state:
-            # Currently muted, seeing active audio
-            self._mute_counter += 1
-            if self._mute_counter >= HYSTERESIS_COUNT:
-                self._last_mute_state = False
-                self._mute_counter = 0
-                print("Hardware unmute detected - audio is active", flush=True)
         else:
-            # State matches reading, reset counter
+            # Any non-zero audio immediately clears mute
+            if self._last_mute_state:
+                self._last_mute_state = False
+                print("Hardware unmute detected - amplitude > 0", flush=True)
             self._mute_counter = 0
         
         # Write state for portal to read
