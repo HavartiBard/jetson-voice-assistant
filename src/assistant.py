@@ -17,7 +17,13 @@ from faster_whisper import WhisperModel
 from settings_store import load_settings
 from history_store import record_query
 from ollama_client import OllamaClient
-from audio_devices import check_audio_is_silent, check_audio_has_speech, read_hardware_mute_led, write_mute_state
+from audio_devices import (
+    check_audio_has_speech,
+    check_audio_is_silent,
+    get_audio_amplitude,
+    read_hardware_mute_led,
+    write_mute_state,
+)
 import time
 import threading
 from collections import deque
@@ -193,6 +199,7 @@ class VoiceAssistant:
         self._last_mute_state = False
         self._mute_announced = False
         self._mute_counter = 0  # Counter for hysteresis
+        self._last_noise_log_ts = 0.0
         
         # Greeting message
         self.speak("Hello! I'm your Jetson Voice Assistant. How can I help you today?")
@@ -458,6 +465,12 @@ class VoiceAssistant:
         """
         try:
             audio_samples, raw_bytes = self._record_audio()
+
+            now = time.time()
+            if now - self._last_noise_log_ts >= 2.0:
+                amp = get_audio_amplitude(raw_bytes)
+                print(f"Audio amplitude max={amp}", flush=True)
+                self._last_noise_log_ts = now
             
             # Check for hardware mute (silent audio) and update state for portal
             is_muted = self.check_and_update_mute_status(raw_bytes)
