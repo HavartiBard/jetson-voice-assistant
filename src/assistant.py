@@ -145,10 +145,11 @@ class VoiceAssistant:
         print(f"Using audio device: {self.audio_device}", flush=True)
         
         # Initialize persistent audio stream to prevent Jabra mute reset on device open
+        # Always use mono (1 channel) for the persistent stream - Jabra hw device only supports mono
         self._audio_stream = PersistentAudioStream(
             self.audio_device, 
             sample_rate=self.audio_sample_rate,
-            channels=self.audio_channels
+            channels=1
         )
         
         # Hardware mute state tracking with hysteresis
