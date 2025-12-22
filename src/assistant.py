@@ -469,6 +469,15 @@ class VoiceAssistant:
                 if new_len > 0:
                     x_new = np.linspace(0.0, 1.0, num=new_len, endpoint=False)
                     audio = np.interp(x_new, x_old, audio).astype(np.float32)
+
+            # Software auto-gain for very quiet microphones (keeps wake word usable)
+            if len(audio) > 0:
+                peak = float(np.max(np.abs(audio)))
+                if 0.0 < peak < 0.05:
+                    target_peak = 0.12
+                    gain = min(12.0, target_peak / peak)
+                    audio = np.clip(audio * gain, -1.0, 1.0).astype(np.float32)
+                    print(f"Applied software gain x{gain:.1f} (peak {peak:.4f} -> {float(np.max(np.abs(audio))):.4f})", flush=True)
             return audio, raw_bytes
         except Exception as e:
             print(f"Recording error: {e}", flush=True)
