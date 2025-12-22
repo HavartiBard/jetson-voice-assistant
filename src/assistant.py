@@ -179,9 +179,9 @@ class VoiceAssistant:
         
         print(f"Using audio device: {self.audio_device}", flush=True)
 
-        # Keep capture stream at 48kHz to avoid blocking playback on some USB devices
-        # that cannot run capture/playback concurrently at different sample rates.
-        self._capture_sample_rate = 48000
+        # Capture at the same rate Whisper expects to avoid resampling artifacts.
+        # Playback is handled by temporarily stopping capture during TTS.
+        self._capture_sample_rate = self.audio_sample_rate
         
         # Initialize persistent audio stream (keeps device open to prevent Jabra mute reset)
         self._audio_stream = PersistentAudioStream(
