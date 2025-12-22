@@ -1,10 +1,17 @@
 from flask import Flask, jsonify, redirect, render_template_string, request, url_for
 import psutil
 import json
+import os
 from datetime import datetime
 
 from settings_store import load_settings, save_settings
 from history_store import get_stats_history, get_query_history, record_stats, clear_query_history
+
+# Reload signal file path
+RELOAD_SIGNAL_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'config', '.reload_signal'
+)
 
 
 app = Flask(__name__)
@@ -506,7 +513,16 @@ def save_settings_route():
     }
 
     save_settings(new_settings)
-    return redirect(url_for("settings", ok="Settings saved successfully"))
+    
+    # Trigger reload signal for the assistant
+    try:
+        os.makedirs(os.path.dirname(RELOAD_SIGNAL_PATH), exist_ok=True)
+        with open(RELOAD_SIGNAL_PATH, 'w') as f:
+            f.write('reload')
+    except Exception as e:
+        print(f"Failed to trigger reload signal: {e}")
+    
+    return redirect(url_for("settings", ok="Settings saved and applied"))
 
 
 @app.get("/stats")

@@ -31,23 +31,14 @@ class VoiceAssistant:
         # Load environment variables
         load_dotenv()
         
-        settings = load_settings()
+        # Reload signal file path
+        self._reload_signal_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'config', '.reload_signal'
+        )
         
-        # OpenAI API key: settings takes priority, then .env
-        api_key = settings.get('openai_api_key') or os.getenv('OPENAI_API_KEY')
-        self.openai_client = OpenAI(api_key=api_key) if api_key else None
-        self.wake_word = (os.getenv('WAKE_WORD') or settings.get('wake_word') or 'jetson').strip().lower()
-
-        self.whisper_mode = (os.getenv('WHISPER_MODE') or settings.get('whisper_mode') or 'local').strip().lower()
-        self.whisper_model_size = (os.getenv('WHISPER_MODEL_SIZE') or settings.get('whisper_model_size') or 'small').strip()
-        self.whisper_language = (os.getenv('WHISPER_LANGUAGE') or settings.get('whisper_language') or 'en').strip()
-
-        self.audio_sample_rate = int(os.getenv('AUDIO_SAMPLE_RATE') or settings.get('audio_sample_rate') or 16000)
-        self.audio_channels = int(os.getenv('AUDIO_CHANNELS') or settings.get('audio_channels') or 1)
-        self.audio_record_seconds = float(os.getenv('AUDIO_RECORD_SECONDS') or settings.get('audio_record_seconds') or 4)
-        
-        # Audio device for arecord (ALSA hw device like "hw:2,0")
-        self.audio_device = os.getenv('AUDIO_DEVICE') or settings.get('audio_device') or self._find_usb_alsa_device()
+        # Load settings
+        self._load_settings()
 
         self._whisper_model = None
         if self.whisper_mode == 'local':
@@ -64,6 +55,42 @@ class VoiceAssistant:
         
         # Greeting message
         self.speak("Hello! I'm your Jetson Voice Assistant. How can I help you today?")
+    
+    def _load_settings(self):
+        """Load or reload settings from config file."""
+        settings = load_settings()
+        
+        # OpenAI API key: settings takes priority, then .env
+        api_key = settings.get('openai_api_key') or os.getenv('OPENAI_API_KEY')
+        self.openai_client = OpenAI(api_key=api_key) if api_key else None
+        self.wake_word = (os.getenv('WAKE_WORD') or settings.get('wake_word') or 'jetson').strip().lower()
+
+        self.whisper_mode = (os.getenv('WHISPER_MODE') or settings.get('whisper_mode') or 'local').strip().lower()
+        self.whisper_model_size = (os.getenv('WHISPER_MODEL_SIZE') or settings.get('whisper_model_size') or 'small').strip()
+        self.whisper_language = (os.getenv('WHISPER_LANGUAGE') or settings.get('whisper_language') or 'en').strip()
+
+        self.audio_sample_rate = int(os.getenv('AUDIO_SAMPLE_RATE') or settings.get('audio_sample_rate') or 16000)
+        self.audio_channels = int(os.getenv('AUDIO_CHANNELS') or settings.get('audio_channels') or 1)
+        self.audio_record_seconds = float(os.getenv('AUDIO_RECORD_SECONDS') or settings.get('audio_record_seconds') or 4)
+        
+        # Audio device for arecord (ALSA hw device like "hw:2,0")
+        if not hasattr(self, 'audio_device') or not self.audio_device:
+            self.audio_device = os.getenv('AUDIO_DEVICE') or settings.get('audio_device') or self._find_usb_alsa_device()
+        
+        print(f"Settings loaded: wake_word='{self.wake_word}'", flush=True)
+    
+    def check_reload(self):
+        """Check if settings reload was requested and reload if needed."""
+        if os.path.exists(self._reload_signal_path):
+            try:
+                os.unlink(self._reload_signal_path)
+                print("Reload signal detected, reloading settings...", flush=True)
+                old_wake_word = self.wake_word
+                self._load_settings()
+                if old_wake_word != self.wake_word:
+                    self.speak(f"Wake word changed to {self.wake_word}")
+            except Exception as e:
+                print(f"Error reloading settings: {e}", flush=True)
     
     def _find_usb_alsa_device(self):
         """Auto-detect USB audio ALSA device (returns hw:X,0 string)"""
@@ -355,6 +382,9 @@ def main():
     # Main loop with wake word detection
     running = True
     while running:
+        # Check for settings reload signal
+        assistant.check_reload()
+        
         # Wait for wake word
         if assistant.listen_for_wake_word():
             # Wake word detected, listen for command
