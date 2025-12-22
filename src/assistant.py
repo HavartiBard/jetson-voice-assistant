@@ -185,11 +185,15 @@ class VoiceAssistant:
             )
         
         print(f"Using audio device: {self.audio_device}", flush=True)
+
+        # Keep capture stream at 48kHz to avoid blocking playback on some USB devices
+        # that cannot run capture/playback concurrently at different sample rates.
+        self._capture_sample_rate = 48000
         
         # Initialize persistent audio stream (keeps device open to prevent Jabra mute reset)
         self._audio_stream = PersistentAudioStream(
             self.audio_device,
-            sample_rate=self.audio_sample_rate,
+            sample_rate=self._capture_sample_rate,
             channels=1  # Jabra only supports mono
         )
         
@@ -399,7 +403,8 @@ class VoiceAssistant:
             Tuple of (audio_samples, raw_bytes) - numpy array and raw PCM bytes
         """
         duration = self.audio_record_seconds
-        samplerate = self.audio_sample_rate
+        target_rate = self.audio_sample_rate
+        capture_rate = getattr(self, '_capture_sample_rate', target_rate)
 
         print(f"Listening... (recording {int(duration)}s)", flush=True)
         
@@ -410,10 +415,18 @@ class VoiceAssistant:
             # Convert raw PCM bytes to float32 numpy array
             audio_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
             audio = audio_int16.astype(np.float32) / 32768.0
+
+            # Resample if capture stream rate differs from whisper/sample rate.
+            if capture_rate != target_rate and len(audio) > 0:
+                x_old = np.linspace(0.0, 1.0, num=len(audio), endpoint=False)
+                new_len = int(len(audio) * (target_rate / float(capture_rate)))
+                if new_len > 0:
+                    x_new = np.linspace(0.0, 1.0, num=new_len, endpoint=False)
+                    audio = np.interp(x_new, x_old, audio).astype(np.float32)
             return audio, raw_bytes
         except Exception as e:
             print(f"Recording error: {e}", flush=True)
-            return np.zeros(int(duration * samplerate), dtype='float32'), b''
+            return np.zeros(int(duration * target_rate), dtype='float32'), b''
 
     def _transcribe_local(self, audio_samples: np.ndarray) -> str:
         # faster-whisper accepts numpy arrays directly (no disk write needed)
