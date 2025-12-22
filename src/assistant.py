@@ -84,10 +84,26 @@ class VoiceAssistant:
         return "default"
     
     def speak(self, text):
-        """Convert text to speech"""
-        print(f"Assistant: {text}")
-        self.engine.say(text)
-        self.engine.runAndWait()
+        """Convert text to speech using espeak + aplay for Jabra output"""
+        print(f"Assistant: {text}", flush=True)
+        try:
+            # Generate speech with espeak, play through Jabra with aplay
+            # Get the playback device from the recording device (hw:2,0 -> plughw:2,0)
+            play_device = self.audio_device.replace('hw:', 'plughw:')
+            
+            # Use espeak to generate wav, pipe to aplay
+            espeak_cmd = ['espeak', '-s', '150', '-v', 'en', '--stdout', text]
+            aplay_cmd = ['aplay', '-D', play_device, '-q']
+            
+            espeak_proc = subprocess.Popen(espeak_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            aplay_proc = subprocess.Popen(aplay_cmd, stdin=espeak_proc.stdout, stderr=subprocess.PIPE)
+            espeak_proc.stdout.close()
+            aplay_proc.communicate()
+        except Exception as e:
+            print(f"TTS error: {e}", flush=True)
+            # Fallback to pyttsx3
+            self.engine.say(text)
+            self.engine.runAndWait()
 
     def _record_audio(self):
         """Record audio using arecord and return float32 mono samples."""
@@ -152,24 +168,62 @@ class VoiceAssistant:
                     return (result.get('text') or '').strip()
                 return (getattr(result, 'text', '') or '').strip()
     
-    def listen(self):
-        """Listen for audio input and convert it to text using Whisper."""
+    def _transcribe(self, audio_samples):
+        """Transcribe audio samples to text."""
+        if self.whisper_mode == 'api':
+            return self._transcribe_api(audio_samples)
+        else:
+            return self._transcribe_local(audio_samples)
+    
+    def listen_for_wake_word(self):
+        """Listen for the wake word. Returns True if wake word detected."""
         try:
             audio_samples = self._record_audio()
-            if self.whisper_mode == 'api':
-                text = self._transcribe_api(audio_samples)
-            else:
-                text = self._transcribe_local(audio_samples)
+            text = self._transcribe(audio_samples)
+            
+            if not text:
+                return False
+            
+            text_lower = text.lower()
+            print(f"Heard: {text_lower}", flush=True)
+            
+            # Check if wake word is in the transcription
+            if self.wake_word in text_lower:
+                print(f"Wake word '{self.wake_word}' detected!", flush=True)
+                return True
+            return False
+        except Exception as e:
+            print(f"Wake word detection error: {e}", flush=True)
+            return False
+    
+    def listen_for_command(self):
+        """Listen for a command after wake word detected."""
+        try:
+            self.speak("Yes?")
+            audio_samples = self._record_audio()
+            text = self._transcribe(audio_samples)
 
             if not text:
-                self.speak("Sorry, I didn't catch that. Could you please repeat?")
+                self.speak("Sorry, I didn't catch that.")
                 return ""
 
-            print(f"You said: {text}")
+            print(f"You said: {text}", flush=True)
             return text.lower()
         except Exception as e:
-            print(f"Transcription error: {e}")
-            self.speak("Sorry, I had trouble understanding audio just now.")
+            print(f"Transcription error: {e}", flush=True)
+            self.speak("Sorry, I had trouble understanding.")
+            return ""
+    
+    def listen(self):
+        """Legacy listen method - records and transcribes."""
+        try:
+            audio_samples = self._record_audio()
+            text = self._transcribe(audio_samples)
+            if text:
+                print(f"You said: {text}", flush=True)
+            return text.lower() if text else ""
+        except Exception as e:
+            print(f"Transcription error: {e}", flush=True)
             return ""
     
     def get_time(self):
@@ -273,12 +327,18 @@ class VoiceAssistant:
 def main():
     assistant = VoiceAssistant()
     
-    # Main loop
+    print(f"Waiting for wake word '{assistant.wake_word}'...", flush=True)
+    
+    # Main loop with wake word detection
     running = True
     while running:
-        command = assistant.listen()
-        if command:
-            running = assistant.process_command(command)
+        # Wait for wake word
+        if assistant.listen_for_wake_word():
+            # Wake word detected, listen for command
+            command = assistant.listen_for_command()
+            if command:
+                running = assistant.process_command(command)
+            print(f"Waiting for wake word '{assistant.wake_word}'...", flush=True)
 
 if __name__ == "__main__":
     main()
