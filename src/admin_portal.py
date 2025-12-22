@@ -816,18 +816,20 @@ def settings():
     <div class="form-group">
       <div class="form-row">
         <div>
-          <label for="whisper_model_size">Model Size</label>
+          <label for="whisper_model_size">Speech-to-Text Model Size</label>
           <select id="whisper_model_size" name="whisper_model_size">
-            {% for m in ['tiny','base','small','medium','large'] %}
-              <option value="{{ m }}" {% if s['whisper_model_size']==m %}selected{% endif %}>{{ m }}</option>
-            {% endfor %}
+            <option value="tiny" {% if s['whisper_model_size']=='tiny' %}selected{% endif %}>tiny (~75MB, fastest)</option>
+            <option value="base" {% if s['whisper_model_size']=='base' %}selected{% endif %}>base (~150MB, fast)</option>
+            <option value="small" {% if s['whisper_model_size']=='small' %}selected{% endif %}>small (~500MB, balanced)</option>
+            <option value="medium" {% if s['whisper_model_size']=='medium' %}selected{% endif %}>medium (~1.5GB, accurate)</option>
+            <option value="large" {% if s['whisper_model_size']=='large' %}selected{% endif %}>large (~3GB, most accurate)</option>
           </select>
-          <div class="hint">Smaller = faster, larger = more accurate</div>
+          <div class="hint">Whisper model for converting your voice to text. Larger = more accurate but uses more RAM.</div>
         </div>
         <div>
-          <label for="whisper_language">Language</label>
+          <label for="whisper_language">Speech Language</label>
           <input id="whisper_language" name="whisper_language" value="{{ s['whisper_language'] }}" />
-          <div class="hint">ISO code: en, es, fr, de, etc.</div>
+          <div class="hint">ISO code for speech recognition: en, es, fr, de, etc.</div>
         </div>
       </div>
     </div>
@@ -1238,6 +1240,59 @@ def api_ollama_status():
     return jsonify(status)
 
 
+def _get_process_memory(name_pattern: str) -> float:
+    """Get memory usage of processes matching name pattern (in MB)."""
+    total = 0.0
+    for proc in psutil.process_iter(['name', 'cmdline', 'memory_info']):
+        try:
+            name = proc.info['name'] or ''
+            cmdline = ' '.join(proc.info['cmdline'] or [])
+            if name_pattern.lower() in name.lower() or name_pattern.lower() in cmdline.lower():
+                total += proc.info['memory_info'].rss / 1024 / 1024
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    return round(total, 1)
+
+
+def _get_memory_breakdown() -> list:
+    """Get memory usage breakdown by component."""
+    settings = load_settings()
+    whisper_sizes = {'tiny': 75, 'base': 150, 'small': 500, 'medium': 1500, 'large': 3000}
+    whisper_model = settings.get('whisper_model_size', 'small')
+    whisper_estimate = whisper_sizes.get(whisper_model, 500)
+    
+    components = []
+    
+    # Voice Assistant process
+    assistant_mem = _get_process_memory('assistant.py')
+    if assistant_mem > 0:
+        components.append({
+            'name': 'Voice Assistant',
+            'memory_mb': assistant_mem,
+            'note': f'Includes Whisper {whisper_model} (~{whisper_estimate}MB)'
+        })
+    
+    # Admin Portal
+    portal_mem = _get_process_memory('admin_portal')
+    if portal_mem > 0:
+        components.append({'name': 'Admin Portal', 'memory_mb': portal_mem, 'note': 'Flask web server'})
+    
+    # Ollama
+    ollama_mem = _get_process_memory('ollama')
+    if ollama_mem > 0:
+        llm_model = settings.get('llm_model', '')
+        components.append({'name': 'Ollama', 'memory_mb': ollama_mem, 'note': f'LLM: {llm_model}' if llm_model else 'Local LLM server'})
+    
+    # System/Other
+    total_used = sum(c['memory_mb'] for c in components)
+    vm = psutil.virtual_memory()
+    system_mem = round(vm.used / 1024 / 1024 - total_used, 1)
+    if system_mem > 0:
+        components.append({'name': 'System & Other', 'memory_mb': system_mem, 'note': 'OS, drivers, other processes'})
+    
+    return components
+
+
 @app.get("/stats")
 def system_stats():
     vm = psutil.virtual_memory()
@@ -1252,6 +1307,9 @@ def system_stats():
     labels = [datetime.fromtimestamp(s["ts"]).strftime("%H:%M") for s in stats_history]
     cpu_data = [s["cpu"] for s in stats_history]
     mem_data = [s["mem"] for s in stats_history]
+    
+    # Get memory breakdown
+    memory_breakdown = _get_memory_breakdown()
 
     body = render_template_string(
         """
@@ -1270,6 +1328,38 @@ def system_stats():
     <div class="stat-label">Disk Usage</div>
     <div class="stat-detail">{{ (du.used/1024/1024/1024)|round(1) }}GB / {{ (du.total/1024/1024/1024)|round(1) }}GB</div>
   </div>
+</div>
+
+<!-- Memory Breakdown -->
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Memory Breakdown</h2>
+    <span class="time-badge">By Component</span>
+  </div>
+  <div class="memory-breakdown">
+    {% for comp in memory_breakdown %}
+    <div class="memory-item">
+      <div class="memory-bar-container">
+        <div class="memory-bar" style="width: {{ (comp.memory_mb / (vm.total/1024/1024) * 100)|round(1) }}%"></div>
+      </div>
+      <div class="memory-info">
+        <div class="memory-name">{{ comp.name }}</div>
+        <div class="memory-value">{{ comp.memory_mb }}MB</div>
+      </div>
+      <div class="memory-note">{{ comp.note }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  <style>
+    .memory-breakdown { display: flex; flex-direction: column; gap: 12px; }
+    .memory-item { background: var(--bg-secondary); padding: 14px 16px; border-radius: 10px; }
+    .memory-bar-container { height: 6px; background: var(--border); border-radius: 3px; margin-bottom: 10px; }
+    .memory-bar { height: 100%; background: linear-gradient(90deg, var(--accent), #a855f7); border-radius: 3px; min-width: 4px; }
+    .memory-info { display: flex; justify-content: space-between; align-items: center; }
+    .memory-name { font-weight: 500; }
+    .memory-value { font-weight: 600; color: var(--accent); }
+    .memory-note { font-size: 0.8rem; color: var(--text-muted); margin-top: 4px; }
+  </style>
 </div>
 
 <div class="card">
@@ -1335,6 +1425,7 @@ new Chart(ctx, {
         labels=labels,
         cpu_data=cpu_data,
         mem_data=mem_data,
+        memory_breakdown=memory_breakdown,
     )
 
     return render_template_string(BASE_TEMPLATE, title="System Stats | Jetson Assistant", body=body, flash=None, active_page="stats")
