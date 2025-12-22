@@ -135,7 +135,7 @@ def check_audio_is_silent(audio_bytes: bytes, threshold: int = 200) -> bool:
     return get_audio_amplitude(audio_bytes) < threshold
 
 
-def check_audio_has_speech(audio_bytes: bytes, threshold: int = 500) -> bool:
+def check_audio_has_speech(audio_bytes: bytes, threshold: int = 300) -> bool:
     """Check if audio likely contains speech worth transcribing.
     
     Uses a higher threshold than mute detection to filter out
