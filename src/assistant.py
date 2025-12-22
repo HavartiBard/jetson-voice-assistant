@@ -8,9 +8,9 @@ from dotenv import load_dotenv
 import openai
 import json
 import tempfile
+import subprocess
 
 import numpy as np
-import sounddevice as sd
 import soundfile as sf
 from faster_whisper import WhisperModel
 
@@ -45,13 +45,8 @@ class VoiceAssistant:
         self.audio_channels = int(os.getenv('AUDIO_CHANNELS') or settings.get('audio_channels') or 1)
         self.audio_record_seconds = float(os.getenv('AUDIO_RECORD_SECONDS') or settings.get('audio_record_seconds') or 4)
         
-        # Audio device: use setting, env var, or auto-detect USB device
-        audio_device_setting = os.getenv('AUDIO_DEVICE') or settings.get('audio_device')
-        if audio_device_setting:
-            self.audio_device = int(audio_device_setting) if audio_device_setting.isdigit() else audio_device_setting
-        else:
-            # Auto-detect: look for USB audio device (like Jabra)
-            self.audio_device = self._find_usb_audio_device()
+        # Audio device for arecord (ALSA hw device like "hw:2,0")
+        self.audio_device = os.getenv('AUDIO_DEVICE') or settings.get('audio_device') or self._find_usb_alsa_device()
 
         self._whisper_model = None
         if self.whisper_mode == 'local':
@@ -64,24 +59,28 @@ class VoiceAssistant:
                 compute_type='int8',
             )
         
-        print(f"Using audio device: {self.audio_device}")
+        print(f"Using audio device: {self.audio_device}", flush=True)
         
         # Greeting message
         self.speak("Hello! I'm your Jetson Voice Assistant. How can I help you today?")
     
-    def _find_usb_audio_device(self):
-        """Auto-detect USB audio device (Jabra, etc.)"""
+    def _find_usb_alsa_device(self):
+        """Auto-detect USB audio ALSA device (returns hw:X,0 string)"""
         try:
-            devices = sd.query_devices()
-            for i, dev in enumerate(devices):
-                name = dev.get('name', '').lower()
-                # Look for USB audio devices
-                if 'usb' in name and dev.get('max_input_channels', 0) > 0:
-                    print(f"Auto-detected USB audio device: {dev['name']} (device {i})")
-                    return i
+            result = subprocess.run(['arecord', '-l'], capture_output=True, text=True)
+            for line in result.stdout.split('\n'):
+                if 'USB' in line and 'card' in line:
+                    # Parse "card 2: USB [Jabra...]" -> "hw:2,0"
+                    parts = line.split(':')
+                    if parts:
+                        card_part = parts[0].strip()
+                        card_num = card_part.replace('card', '').strip()
+                        device = f"hw:{card_num},0"
+                        print(f"Auto-detected USB audio device: {line.strip()} -> {device}", flush=True)
+                        return device
         except Exception as e:
-            print(f"Error detecting audio device: {e}")
-        return None  # Use system default
+            print(f"Error detecting audio device: {e}", flush=True)
+        return "default"
     
     def speak(self, text):
         """Convert text to speech"""
@@ -90,27 +89,38 @@ class VoiceAssistant:
         self.engine.runAndWait()
 
     def _record_audio(self):
-        """Record audio from the configured microphone and return float32 mono samples."""
-        duration = self.audio_record_seconds
+        """Record audio using arecord and return float32 mono samples."""
+        duration = int(self.audio_record_seconds)
         samplerate = self.audio_sample_rate
-        channels = self.audio_channels
 
-        print(f"Listening... (recording {duration:.1f}s)")
-        audio = sd.rec(
-            int(duration * samplerate),
-            samplerate=samplerate,
-            channels=channels,
-            dtype='float32',
-            device=self.audio_device,
-        )
-        sd.wait()
-
-        if channels > 1:
-            audio = np.mean(audio, axis=1)
-        else:
-            audio = audio.reshape(-1)
-
-        return audio
+        print(f"Listening... (recording {duration}s)", flush=True)
+        
+        # Use arecord for reliable USB audio capture
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+            tmp_path = f.name
+        
+        try:
+            cmd = [
+                'arecord',
+                '-D', self.audio_device,
+                '-f', 'S16_LE',
+                '-r', str(samplerate),
+                '-c', '1',
+                '-d', str(duration),
+                '-q',  # quiet
+                tmp_path
+            ]
+            subprocess.run(cmd, check=True, capture_output=True)
+            
+            # Read the recorded audio
+            audio, sr = sf.read(tmp_path, dtype='float32')
+            return audio
+        except subprocess.CalledProcessError as e:
+            print(f"Recording error: {e.stderr.decode() if e.stderr else e}", flush=True)
+            return np.zeros(int(duration * samplerate), dtype='float32')
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
     def _transcribe_local(self, audio_samples: np.ndarray) -> str:
         # faster-whisper expects a file path or numpy audio; file path is simplest.
