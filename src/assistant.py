@@ -29,6 +29,7 @@ class PersistentAudioStream:
         self.sample_rate = sample_rate
         self.channels = channels
         self.process = None
+        self._restart_count = 0
         self._start_stream()
     
     def _start_stream(self):
@@ -36,6 +37,7 @@ class PersistentAudioStream:
         if self.process is not None:
             self._stop_stream()
         
+        # Use a larger buffer to prevent underruns
         cmd = [
             'arecord',
             '-D', self.device,
@@ -44,9 +46,15 @@ class PersistentAudioStream:
             '-c', str(self.channels),
             '-t', 'raw',
             '-q',
-            '--buffer-size=8192',
+            '-B', '500000',  # 500ms buffer time in microseconds
         ]
-        self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.process = subprocess.Popen(
+            cmd, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE,
+            bufsize=0  # Unbuffered
+        )
+        self._restart_count = 0
         print(f"Started persistent audio stream on {self.device}", flush=True)
     
     def _stop_stream(self):
@@ -68,19 +76,32 @@ class PersistentAudioStream:
         Returns:
             Raw PCM bytes
         """
-        if self.process is None or self.process.poll() is not None:
-            print("Audio stream died, restarting...", flush=True)
-            self._start_stream()
-        
         # Calculate bytes needed: sample_rate * channels * 2 bytes per sample * duration
         bytes_needed = int(self.sample_rate * self.channels * 2 * duration_seconds)
         
+        # Check if process is still running
+        if self.process is None:
+            self._start_stream()
+        elif self.process.poll() is not None:
+            # Process died, check why and restart
+            stderr = self.process.stderr.read().decode() if self.process.stderr else ""
+            if stderr:
+                print(f"Audio stream error: {stderr[:200]}", flush=True)
+            self._restart_count += 1
+            if self._restart_count > 3:
+                print("Too many restarts, waiting before retry...", flush=True)
+                time.sleep(1)
+                self._restart_count = 0
+            self._start_stream()
+        
         try:
             raw_bytes = self.process.stdout.read(bytes_needed)
+            if len(raw_bytes) < bytes_needed:
+                # Short read - pad with silence
+                raw_bytes += b'\x00' * (bytes_needed - len(raw_bytes))
             return raw_bytes
         except Exception as e:
             print(f"Error reading from audio stream: {e}", flush=True)
-            self._start_stream()
             return b'\x00' * bytes_needed
     
     def close(self):
