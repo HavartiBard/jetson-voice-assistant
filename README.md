@@ -50,16 +50,16 @@ A customizable voice assistant designed specifically for the NVIDIA Jetson Nano/
 
 ## Installation
 
-1. **Clone the repository**
+1. **Install system dependencies**
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y git python3-venv portaudio19-dev espeak ffmpeg alsa-utils
+   ```
+
+2. **Clone the repository**
    ```bash
    git clone <repository-url>
    cd jetson-voice-assistant
-   ```
-
-2. **Install system dependencies**
-   ```bash
-   sudo apt-get update
-   sudo apt-get install -y python3-venv portaudio19-dev espeak ffmpeg alsa-utils
    ```
 
 3. **Create and activate a virtual environment**
