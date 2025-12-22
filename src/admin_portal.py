@@ -2,10 +2,13 @@ from flask import Flask, jsonify, redirect, render_template_string, request, url
 import psutil
 import json
 import os
+import subprocess
+import socket
+import time as time_module
 from datetime import datetime
 
 from settings_store import load_settings, save_settings
-from history_store import get_stats_history, get_query_history, record_stats, clear_query_history
+from history_store import get_stats_history, get_query_history, record_stats, clear_query_history, get_query_analytics
 from audio_devices import get_audio_input_devices, get_audio_output_devices
 
 # Reload signal file path
@@ -373,6 +376,7 @@ BASE_TEMPLATE = """
         <h1>Jetson Assistant</h1>
       </div>
       <nav>
+        <a href="{{ url_for('dashboard') }}" {% if active_page == 'dashboard' %}class="active"{% endif %}>Dashboard</a>
         <a href="{{ url_for('settings') }}" {% if active_page == 'settings' %}class="active"{% endif %}>Settings</a>
         <a href="{{ url_for('system_stats') }}" {% if active_page == 'stats' %}class="active"{% endif %}>System Stats</a>
         <a href="{{ url_for('query_history') }}" {% if active_page == 'history' %}class="active"{% endif %}>Query History</a>
@@ -392,7 +396,380 @@ BASE_TEMPLATE = """
 
 @app.get("/")
 def root():
-    return redirect(url_for("settings"))
+    return redirect(url_for("dashboard"))
+
+
+def _check_service_status(service_name: str) -> dict:
+    """Check systemd service status."""
+    try:
+        result = subprocess.run(
+            ['systemctl', 'is-active', service_name],
+            capture_output=True, text=True, timeout=5
+        )
+        is_active = result.stdout.strip() == 'active'
+        return {"name": service_name, "status": "running" if is_active else "stopped", "ok": is_active}
+    except Exception:
+        return {"name": service_name, "status": "unknown", "ok": False}
+
+
+def _check_openai_status() -> dict:
+    """Check OpenAI API connectivity."""
+    settings = load_settings()
+    api_key = settings.get('openai_api_key', '')
+    if not api_key:
+        return {"name": "OpenAI API", "status": "not configured", "ok": False}
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        start = time_module.time()
+        client.models.list()
+        latency = int((time_module.time() - start) * 1000)
+        return {"name": "OpenAI API", "status": f"connected ({latency}ms)", "ok": True, "latency": latency}
+    except Exception as e:
+        return {"name": "OpenAI API", "status": f"error: {str(e)[:30]}", "ok": False}
+
+
+def _check_internet() -> dict:
+    """Check internet connectivity."""
+    try:
+        socket.create_connection(("8.8.8.8", 53), timeout=3)
+        return {"name": "Internet", "status": "connected", "ok": True}
+    except OSError:
+        return {"name": "Internet", "status": "offline", "ok": False}
+
+
+def _check_audio_devices() -> dict:
+    """Check audio device availability."""
+    try:
+        result = subprocess.run(['arecord', '-l'], capture_output=True, text=True, timeout=5)
+        has_devices = 'card' in result.stdout.lower()
+        return {"name": "Audio Devices", "status": "available" if has_devices else "not found", "ok": has_devices}
+    except Exception:
+        return {"name": "Audio Devices", "status": "error", "ok": False}
+
+
+def _get_jetson_stats() -> dict:
+    """Get Jetson-specific stats (temperature, GPU if available)."""
+    stats = {"temperatures": [], "gpu_usage": None, "uptime": ""}
+    
+    # Get CPU temperatures from thermal zones
+    try:
+        thermal_zones = []
+        for i in range(10):
+            temp_path = f"/sys/class/thermal/thermal_zone{i}/temp"
+            type_path = f"/sys/class/thermal/thermal_zone{i}/type"
+            if os.path.exists(temp_path):
+                with open(temp_path) as f:
+                    temp = int(f.read().strip()) / 1000.0
+                zone_type = "Zone"
+                if os.path.exists(type_path):
+                    with open(type_path) as f:
+                        zone_type = f.read().strip()
+                thermal_zones.append({"name": zone_type, "temp": round(temp, 1)})
+        stats["temperatures"] = thermal_zones
+    except Exception:
+        pass
+    
+    # Get uptime
+    try:
+        with open('/proc/uptime') as f:
+            uptime_seconds = float(f.read().split()[0])
+            days = int(uptime_seconds // 86400)
+            hours = int((uptime_seconds % 86400) // 3600)
+            minutes = int((uptime_seconds % 3600) // 60)
+            if days > 0:
+                stats["uptime"] = f"{days}d {hours}h {minutes}m"
+            elif hours > 0:
+                stats["uptime"] = f"{hours}h {minutes}m"
+            else:
+                stats["uptime"] = f"{minutes}m"
+    except Exception:
+        stats["uptime"] = "unknown"
+    
+    # Try to get GPU usage (tegrastats for Jetson)
+    try:
+        # Check for NVIDIA GPU via nvidia-smi (works on desktop + some Jetsons)
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=utilization.gpu', '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            stats["gpu_usage"] = int(result.stdout.strip().split('\n')[0])
+    except Exception:
+        pass
+    
+    return stats
+
+
+@app.get("/dashboard")
+def dashboard():
+    """Main dashboard with service status and analytics."""
+    # Service status checks
+    services = [
+        _check_service_status("voice-assistant"),
+        _check_service_status("voice-assistant-portal"),
+        _check_openai_status(),
+        _check_internet(),
+        _check_audio_devices(),
+    ]
+    
+    # System metrics
+    vm = psutil.virtual_memory()
+    du = psutil.disk_usage("/")
+    cpu_percent = psutil.cpu_percent(interval=0.3)
+    jetson_stats = _get_jetson_stats()
+    
+    # Query analytics
+    analytics = get_query_analytics()
+    
+    # Overall health
+    all_ok = all(s["ok"] for s in services)
+    health_status = "healthy" if all_ok else "degraded"
+    
+    body = render_template_string(
+        """
+<div class="dashboard-grid">
+  <!-- Health Status Banner -->
+  <div class="health-banner {{ 'health-ok' if health_status == 'healthy' else 'health-warn' }}">
+    <div class="health-icon">{{ '✓' if health_status == 'healthy' else '⚠' }}</div>
+    <div class="health-text">
+      <strong>System {{ health_status.title() }}</strong>
+      <span>Uptime: {{ jetson_stats.uptime }}</span>
+    </div>
+  </div>
+
+  <!-- Service Status Grid -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Service Status</h2>
+    </div>
+    <div class="service-grid">
+      {% for svc in services %}
+      <div class="service-item {{ 'service-ok' if svc.ok else 'service-err' }}">
+        <div class="service-indicator"></div>
+        <div class="service-info">
+          <div class="service-name">{{ svc.name }}</div>
+          <div class="service-status">{{ svc.status }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Quick Stats Row -->
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-value">{{ cpu_percent }}%</div>
+      <div class="stat-label">CPU</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ vm.percent }}%</div>
+      <div class="stat-label">Memory</div>
+      <div class="stat-detail">{{ (vm.used/1024/1024/1024)|round(1) }}GB / {{ (vm.total/1024/1024/1024)|round(1) }}GB</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value">{{ du.percent }}%</div>
+      <div class="stat-label">Disk</div>
+    </div>
+    {% if jetson_stats.gpu_usage is not none %}
+    <div class="stat-card">
+      <div class="stat-value">{{ jetson_stats.gpu_usage }}%</div>
+      <div class="stat-label">GPU</div>
+    </div>
+    {% endif %}
+    {% if jetson_stats.temperatures %}
+    <div class="stat-card">
+      <div class="stat-value">{{ jetson_stats.temperatures[0].temp }}°C</div>
+      <div class="stat-label">{{ jetson_stats.temperatures[0].name }}</div>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Usage Analytics -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Usage Analytics</h2>
+    </div>
+    <div class="analytics-grid">
+      <div class="analytics-stat">
+        <div class="analytics-value">{{ analytics.total_queries }}</div>
+        <div class="analytics-label">Total Queries</div>
+      </div>
+      <div class="analytics-stat">
+        <div class="analytics-value">{{ analytics.queries_today }}</div>
+        <div class="analytics-label">Today</div>
+      </div>
+      <div class="analytics-stat">
+        <div class="analytics-value">{{ analytics.queries_this_week }}</div>
+        <div class="analytics-label">This Week</div>
+      </div>
+      <div class="analytics-stat">
+        <div class="analytics-value">{{ analytics.total_tokens | default(0) }}</div>
+        <div class="analytics-label">Total Tokens</div>
+      </div>
+      <div class="analytics-stat">
+        <div class="analytics-value">{{ analytics.avg_duration_ms }}ms</div>
+        <div class="analytics-label">Avg Response</div>
+      </div>
+      <div class="analytics-stat">
+        <div class="analytics-value">{{ analytics.avg_tokens_per_query }}</div>
+        <div class="analytics-label">Avg Tokens/Query</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Queries Over Time Chart -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Queries Over Time</h2>
+      <span class="time-badge">Last 7 days</span>
+    </div>
+    <div class="chart-container">
+      <canvas id="queriesChart"></canvas>
+    </div>
+  </div>
+
+  <!-- Activity by Hour -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Activity by Hour</h2>
+      <span class="time-badge">Last 24 hours</span>
+    </div>
+    <div class="chart-container" style="height: 200px;">
+      <canvas id="hourlyChart"></canvas>
+    </div>
+  </div>
+
+  {% if jetson_stats.temperatures|length > 1 %}
+  <!-- Temperature Details -->
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Thermal Zones</h2>
+    </div>
+    <div class="temp-grid">
+      {% for t in jetson_stats.temperatures %}
+      <div class="temp-item">
+        <div class="temp-value {{ 'temp-hot' if t.temp > 70 else ('temp-warm' if t.temp > 50 else 'temp-cool') }}">{{ t.temp }}°C</div>
+        <div class="temp-label">{{ t.name }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<style>
+  .dashboard-grid { display: flex; flex-direction: column; gap: 24px; }
+  .health-banner {
+    display: flex; align-items: center; gap: 16px;
+    padding: 20px 24px; border-radius: 16px;
+    background: linear-gradient(135deg, rgba(34, 197, 94, 0.15) 0%, rgba(34, 197, 94, 0.05) 100%);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+  }
+  .health-warn {
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(245, 158, 11, 0.05) 100%);
+    border-color: rgba(245, 158, 11, 0.3);
+  }
+  .health-icon { font-size: 32px; }
+  .health-ok .health-icon { color: var(--success); }
+  .health-warn .health-icon { color: var(--warning); }
+  .health-text { display: flex; flex-direction: column; }
+  .health-text strong { font-size: 1.2rem; }
+  .health-text span { color: var(--text-secondary); font-size: 0.9rem; }
+  
+  .service-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .service-item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 16px; background: var(--bg-secondary);
+    border-radius: 10px; border: 1px solid var(--border);
+  }
+  .service-indicator { width: 10px; height: 10px; border-radius: 50%; }
+  .service-ok .service-indicator { background: var(--success); box-shadow: 0 0 8px var(--success); }
+  .service-err .service-indicator { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+  .service-name { font-weight: 500; }
+  .service-status { font-size: 0.8rem; color: var(--text-muted); }
+  
+  .analytics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 16px; }
+  .analytics-stat { text-align: center; padding: 16px; background: var(--bg-secondary); border-radius: 10px; }
+  .analytics-value { font-size: 1.8rem; font-weight: 700; color: var(--accent); }
+  .analytics-label { font-size: 0.8rem; color: var(--text-secondary); margin-top: 4px; }
+  
+  .temp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 12px; }
+  .temp-item { text-align: center; padding: 12px; background: var(--bg-secondary); border-radius: 8px; }
+  .temp-value { font-size: 1.4rem; font-weight: 600; }
+  .temp-cool { color: var(--success); }
+  .temp-warm { color: var(--warning); }
+  .temp-hot { color: var(--danger); }
+  .temp-label { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }
+</style>
+
+<script>
+// Queries by day chart
+const dailyCtx = document.getElementById('queriesChart').getContext('2d');
+const dailyData = {{ analytics.queries_by_day | tojson }};
+new Chart(dailyCtx, {
+  type: 'bar',
+  data: {
+    labels: dailyData.map(d => d[0]),
+    datasets: [{
+      label: 'Queries',
+      data: dailyData.map(d => d[1]),
+      backgroundColor: 'rgba(99, 102, 241, 0.6)',
+      borderColor: '#6366f1',
+      borderWidth: 1,
+      borderRadius: 6,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { grid: { color: '#333' }, ticks: { color: '#666' } },
+      y: { beginAtZero: true, grid: { color: '#333' }, ticks: { color: '#666', stepSize: 1 } }
+    }
+  }
+});
+
+// Hourly activity chart
+const hourlyCtx = document.getElementById('hourlyChart').getContext('2d');
+const hourlyData = {{ analytics.queries_by_hour | tojson }};
+const hourLabels = Array.from({length: 24}, (_, i) => i.toString().padStart(2, '0') + ':00');
+new Chart(hourlyCtx, {
+  type: 'bar',
+  data: {
+    labels: hourLabels,
+    datasets: [{
+      label: 'Queries',
+      data: hourlyData,
+      backgroundColor: 'rgba(168, 85, 247, 0.6)',
+      borderColor: '#a855f7',
+      borderWidth: 1,
+      borderRadius: 4,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { grid: { display: false }, ticks: { color: '#666', maxRotation: 0, autoSkip: true, maxTicksLimit: 12 } },
+      y: { beginAtZero: true, grid: { color: '#333' }, ticks: { color: '#666', stepSize: 1 } }
+    }
+  }
+});
+</script>
+""",
+        services=services,
+        health_status=health_status,
+        vm=vm,
+        du=du,
+        cpu_percent=cpu_percent,
+        jetson_stats=jetson_stats,
+        analytics=analytics,
+    )
+
+    return render_template_string(BASE_TEMPLATE, title="Dashboard | Jetson Assistant", body=body, flash=None, active_page="dashboard")
 
 
 @app.get("/settings")
@@ -677,6 +1054,8 @@ def query_history():
         <th>Query</th>
         <th>Response</th>
         <th>Duration</th>
+        <th>Tokens</th>
+        <th>Model</th>
       </tr>
     </thead>
     <tbody>
@@ -686,10 +1065,26 @@ def query_history():
         <td class="query-text" title="{{ q.query }}">{{ q.query }}</td>
         <td class="query-text" title="{{ q.response }}">{{ q.response[:100] }}{% if q.response|length > 100 %}...{% endif %}</td>
         <td>{{ q.duration_ms }}ms</td>
+        <td>
+          {% if q.total_tokens %}
+          <span class="token-badge" title="Prompt: {{ q.prompt_tokens }}, Completion: {{ q.completion_tokens }}">{{ q.total_tokens }}</span>
+          {% else %}
+          <span class="token-badge token-na">—</span>
+          {% endif %}
+        </td>
+        <td><span class="model-badge">{{ q.model or '—' }}</span></td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+  <style>
+    .token-badge { 
+      display: inline-block; padding: 4px 8px; background: rgba(99, 102, 241, 0.2); 
+      border-radius: 6px; font-size: 0.8rem; color: var(--accent); cursor: help;
+    }
+    .token-na { background: var(--bg-secondary); color: var(--text-muted); }
+    .model-badge { font-size: 0.75rem; color: var(--text-muted); }
+  </style>
   {% else %}
   <div class="empty-state">
     <div class="empty-state-icon">📝</div>
@@ -722,6 +1117,47 @@ def api_stats():
         "cpu": cpu_percent,
         "memory": vm.percent,
         "disk": du.percent,
+    })
+
+
+@app.get("/api/dashboard")
+def api_dashboard():
+    """JSON endpoint for dashboard live updates."""
+    # Service status checks
+    services = [
+        _check_service_status("voice-assistant"),
+        _check_service_status("voice-assistant-portal"),
+        _check_openai_status(),
+        _check_internet(),
+        _check_audio_devices(),
+    ]
+    
+    # System metrics
+    vm = psutil.virtual_memory()
+    du = psutil.disk_usage("/")
+    cpu_percent = psutil.cpu_percent(interval=0.1)
+    jetson_stats = _get_jetson_stats()
+    
+    # Query analytics
+    analytics = get_query_analytics()
+    
+    # Overall health
+    all_ok = all(s["ok"] for s in services)
+    
+    return jsonify({
+        "services": services,
+        "health": "healthy" if all_ok else "degraded",
+        "system": {
+            "cpu": cpu_percent,
+            "memory": vm.percent,
+            "memory_used_gb": round(vm.used / 1024 / 1024 / 1024, 1),
+            "memory_total_gb": round(vm.total / 1024 / 1024 / 1024, 1),
+            "disk": du.percent,
+            "gpu": jetson_stats.get("gpu_usage"),
+            "uptime": jetson_stats.get("uptime", ""),
+            "temperatures": jetson_stats.get("temperatures", []),
+        },
+        "analytics": analytics,
     })
 
 

@@ -360,13 +360,19 @@ class VoiceAssistant:
             if self.openai_client:
                 try:
                     response = self.openai_client.chat.completions.create(
-                        model="gpt-3.5-turbo",
+                        model="gpt-4o-mini",
                         messages=[
                             {"role": "system", "content": "You are a helpful voice assistant. Keep responses brief and conversational."},
                             {"role": "user", "content": command}
                         ]
                     )
                     response_text = response.choices[0].message.content
+                    # Capture token usage
+                    if response.usage:
+                        prompt_tokens = response.usage.prompt_tokens
+                        completion_tokens = response.usage.completion_tokens
+                        total_tokens = response.usage.total_tokens
+                        model_used = response.model
                     self.speak(response_text)
                 except Exception as e:
                     print(f"Error with OpenAI API: {e}", flush=True)
@@ -376,9 +382,18 @@ class VoiceAssistant:
                 response_text = "OpenAI API key not configured."
                 self.speak("I don't have an OpenAI API key configured. Please add one in the admin portal.")
         
-        # Record query to history
+        # Record query to history with token usage if available
         duration_ms = int((time.time() - start_time) * 1000)
-        record_query(command, response_text, duration_ms)
+        _locals = locals()
+        record_query(
+            command,
+            response_text,
+            duration_ms,
+            prompt_tokens=_locals.get('prompt_tokens', 0),
+            completion_tokens=_locals.get('completion_tokens', 0),
+            total_tokens=_locals.get('total_tokens', 0),
+            model=_locals.get('model_used', ""),
+        )
         
         return True
 
