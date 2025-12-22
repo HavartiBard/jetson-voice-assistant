@@ -219,13 +219,18 @@ class VoiceAssistant:
             return self._transcribe_local(audio_samples)
     
     def listen_for_wake_word(self):
-        """Listen for the wake word. Returns True if wake word detected."""
+        """Listen for the wake word. Returns (detected, trailing_command) tuple.
+        
+        If user says "apple what time is it", returns (True, "what time is it")
+        If user just says "apple", returns (True, None)
+        If no wake word, returns (False, None)
+        """
         try:
             audio_samples = self._record_audio()
             text = self._transcribe(audio_samples)
             
             if not text:
-                return False
+                return False, None
             
             text_lower = text.lower()
             print(f"Heard: {text_lower}", flush=True)
@@ -233,11 +238,21 @@ class VoiceAssistant:
             # Check if wake word is in the transcription
             if self.wake_word in text_lower:
                 print(f"Wake word '{self.wake_word}' detected!", flush=True)
-                return True
-            return False
+                
+                # Extract any command that follows the wake word
+                wake_idx = text_lower.find(self.wake_word)
+                trailing = text_lower[wake_idx + len(self.wake_word):].strip()
+                # Remove common filler words/punctuation at the start
+                trailing = trailing.lstrip('.,!? ')
+                
+                if trailing and len(trailing) > 2:
+                    print(f"Trailing command: {trailing}", flush=True)
+                    return True, trailing
+                return True, None
+            return False, None
         except Exception as e:
             print(f"Wake word detection error: {e}", flush=True)
-            return False
+            return False, None
     
     def listen_for_command(self):
         """Listen for a command after wake word detected."""
@@ -378,10 +393,15 @@ def main():
         # Check for settings reload signal
         assistant.check_reload()
         
-        # Wait for wake word
-        if assistant.listen_for_wake_word():
-            # Wake word detected, listen for command
-            command = assistant.listen_for_command()
+        # Wait for wake word (may include trailing command)
+        detected, trailing_command = assistant.listen_for_wake_word()
+        if detected:
+            # Use trailing command if present, otherwise listen for new command
+            if trailing_command:
+                command = trailing_command
+            else:
+                command = assistant.listen_for_command()
+            
             if command:
                 running = assistant.process_command(command)
             print(f"Waiting for wake word '{assistant.wake_word}'...", flush=True)
