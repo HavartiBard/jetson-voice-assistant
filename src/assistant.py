@@ -286,12 +286,14 @@ class VoiceAssistant:
 
     def _init_whisper_model(self):
         if self.whisper_mode == 'local':
+            print(f"Initializing Whisper model (local): size={self.whisper_model_size}", flush=True)
             self._whisper_model = WhisperModel(
                 self.whisper_model_size,
                 device='cpu',
                 compute_type='int8',
             )
         else:
+            print("Initializing Whisper model (api): local model disabled", flush=True)
             self._whisper_model = None
     
     def check_and_update_mute_status(self, audio_data: bytes) -> bool:
@@ -464,11 +466,17 @@ class VoiceAssistant:
 
             # Resample if capture stream rate differs from whisper/sample rate.
             if capture_rate != target_rate and len(audio) > 0:
-                x_old = np.linspace(0.0, 1.0, num=len(audio), endpoint=False)
-                new_len = int(len(audio) * (target_rate / float(capture_rate)))
-                if new_len > 0:
-                    x_new = np.linspace(0.0, 1.0, num=new_len, endpoint=False)
-                    audio = np.interp(x_new, x_old, audio).astype(np.float32)
+                # Prefer exact integer-ratio decimation when possible.
+                if capture_rate % target_rate == 0:
+                    step = int(capture_rate // target_rate)
+                    if step > 0:
+                        audio = audio[::step].astype(np.float32)
+                else:
+                    x_old = np.linspace(0.0, 1.0, num=len(audio), endpoint=False)
+                    new_len = int(len(audio) * (target_rate / float(capture_rate)))
+                    if new_len > 0:
+                        x_new = np.linspace(0.0, 1.0, num=new_len, endpoint=False)
+                        audio = np.interp(x_new, x_old, audio).astype(np.float32)
 
             # Software auto-gain for very quiet microphones (keeps wake word usable)
             if len(audio) > 0:
