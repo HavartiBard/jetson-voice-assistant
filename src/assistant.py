@@ -481,9 +481,9 @@ class VoiceAssistant:
             # Software auto-gain for very quiet microphones (keeps wake word usable)
             if len(audio) > 0:
                 peak = float(np.max(np.abs(audio)))
-                if 0.0 < peak < 0.05:
-                    target_peak = 0.12
-                    gain = min(12.0, target_peak / peak)
+                if 0.0 < peak < 0.06:
+                    target_peak = 0.20
+                    gain = min(40.0, target_peak / peak)
                     audio = np.clip(audio * gain, -1.0, 1.0).astype(np.float32)
                     print(f"Applied software gain x{gain:.1f} (peak {peak:.4f} -> {float(np.max(np.abs(audio))):.4f})", flush=True)
             return audio, raw_bytes
@@ -563,9 +563,24 @@ class VoiceAssistant:
             # Normalize transcription/wake word to handle variations like "jet son" vs "jetson"
             normalized_text = re.sub(r'[^a-z0-9]+', '', text_lower)
             normalized_wake = re.sub(r'[^a-z0-9]+', '', self.wake_word.lower())
+
+            # Common Whisper mis-transcriptions for wake words.
+            # Keep this tiny and conservative to avoid false positives.
+            wake_aliases = []
+            if normalized_wake:
+                wake_aliases.append(normalized_wake)
+            if normalized_wake == 'computer':
+                wake_aliases += ['comehere', 'compute', 'commuter']
+            elif normalized_wake == 'assistant':
+                wake_aliases += ['aassistant']
+            elif normalized_wake == 'jetson':
+                wake_aliases += ['jetson', 'jetsonn', 'jetsonnn', 'jetson testing', 'jetson']
+
+            wake_aliases = [re.sub(r'[^a-z0-9]+', '', a.lower()) for a in wake_aliases if a]
+            wake_aliases = list(dict.fromkeys([a for a in wake_aliases if a]))
             
             # Check if wake word is in the transcription
-            if self.wake_word in text_lower or (normalized_wake and normalized_wake in normalized_text):
+            if self.wake_word in text_lower or any(a in normalized_text for a in wake_aliases):
                 # Found wake word - extract trailing command if present
                 parts = text_lower.split(self.wake_word, 1)
                 trailing = parts[1].strip() if len(parts) > 1 else None
