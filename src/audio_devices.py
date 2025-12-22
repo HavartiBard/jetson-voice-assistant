@@ -96,7 +96,7 @@ MUTE_STATE_FILE = os.path.join(
 )
 
 
-def check_audio_is_silent(audio_bytes: bytes, threshold: int = 100) -> bool:
+def check_audio_is_silent(audio_bytes: bytes, threshold: int = 200) -> bool:
     """Check if audio data is essentially silent (hardware muted).
     
     Args:
