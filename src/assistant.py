@@ -196,6 +196,8 @@ class VoiceAssistant:
             sample_rate=self._capture_sample_rate,
             channels=1  # Jabra only supports mono
         )
+        self._audio_stream_device = self.audio_device
+        self._audio_stream_channels = 1
         
         # Hardware mute state tracking with hysteresis
         self._last_mute_state = False
@@ -205,6 +207,28 @@ class VoiceAssistant:
         
         # Greeting message
         self.speak("Hello! I'm your Jetson Voice Assistant. How can I help you today?")
+
+    def _stop_audio_stream_for_playback(self):
+        """Stop capture stream to avoid blocking playback on some USB devices."""
+        try:
+            if getattr(self, '_audio_stream', None):
+                self._audio_stream.stop()
+                self._audio_stream = None
+        except Exception as e:
+            print(f"Error stopping audio stream: {e}", flush=True)
+
+    def _restart_audio_stream_after_playback(self):
+        """Restart capture stream after playback."""
+        try:
+            if getattr(self, '_audio_stream', None):
+                return
+            self._audio_stream = PersistentAudioStream(
+                self._audio_stream_device,
+                sample_rate=self._capture_sample_rate,
+                channels=self._audio_stream_channels,
+            )
+        except Exception as e:
+            print(f"Error restarting audio stream: {e}", flush=True)
     
     def _load_settings(self):
         """Load or reload settings from config file. Settings.json takes priority over .env."""
@@ -324,27 +348,37 @@ class VoiceAssistant:
         tts_lang = getattr(self, 'tts_language', 'en')
         tts_speed = getattr(self, 'tts_speed', 150)
 
-        # pyttsx3 does not reliably allow selecting an ALSA output device.
-        # If a specific ALSA device is configured, use the espeak->aplay path.
-        if tts_provider == 'pyttsx3' and play_device != 'default':
-            self._speak_espeak(text, play_device, tts_lang, tts_speed)
-            return
-        
-        # Try the configured provider first
-        if tts_provider == 'gtts':
-            if self._speak_gtts(text, play_device, tts_lang):
-                return
-            print("gTTS failed, falling back to espeak", flush=True)
-            self._speak_espeak(text, play_device, tts_lang, tts_speed)
-        elif tts_provider == 'espeak':
-            self._speak_espeak(text, play_device, tts_lang, tts_speed)
-        elif tts_provider == 'pyttsx3':
-            if not self._speak_pyttsx3(text, tts_speed):
-                print("pyttsx3 failed, falling back to espeak", flush=True)
+        # Some USB devices (including Jabra) can refuse playback if capture is held open.
+        # Temporarily release capture during playback.
+        needs_duplex_release = play_device != 'default'
+        if needs_duplex_release:
+            self._stop_audio_stream_for_playback()
+
+        try:
+            # pyttsx3 does not reliably allow selecting an ALSA output device.
+            # If a specific ALSA device is configured, use the espeak->aplay path.
+            if tts_provider == 'pyttsx3' and play_device != 'default':
                 self._speak_espeak(text, play_device, tts_lang, tts_speed)
-        else:
-            # Unknown provider, default to espeak
-            self._speak_espeak(text, play_device, tts_lang, tts_speed)
+                return
+        
+            # Try the configured provider first
+            if tts_provider == 'gtts':
+                if self._speak_gtts(text, play_device, tts_lang):
+                    return
+                print("gTTS failed, falling back to espeak", flush=True)
+                self._speak_espeak(text, play_device, tts_lang, tts_speed)
+            elif tts_provider == 'espeak':
+                self._speak_espeak(text, play_device, tts_lang, tts_speed)
+            elif tts_provider == 'pyttsx3':
+                if not self._speak_pyttsx3(text, tts_speed):
+                    print("pyttsx3 failed, falling back to espeak", flush=True)
+                    self._speak_espeak(text, play_device, tts_lang, tts_speed)
+            else:
+                # Unknown provider, default to espeak
+                self._speak_espeak(text, play_device, tts_lang, tts_speed)
+        finally:
+            if needs_duplex_release:
+                self._restart_audio_stream_after_playback()
     
     def _speak_gtts(self, text, play_device, lang='en'):
         """Speak using Google TTS (requires internet)."""
