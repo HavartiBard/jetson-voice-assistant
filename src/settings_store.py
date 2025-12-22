@@ -16,6 +16,10 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "llm_provider": "openai",  # "openai" or "ollama"
     "llm_model": "gpt-4o-mini",  # Model name for the selected provider
     "ollama_host": "http://localhost:11434",  # Ollama API endpoint
+    # TTS Settings
+    "tts_provider": "gtts",  # "gtts", "espeak", or "pyttsx3"
+    "tts_language": "en",  # Language code for TTS
+    "tts_speed": 150,  # Speech rate (espeak/pyttsx3)
 }
 
 # Curated list of Ollama models suitable for Jetson (limited RAM)
@@ -34,6 +38,13 @@ OPENAI_MODELS = [
     {"name": "gpt-4o", "description": "Most capable"},
     {"name": "gpt-4-turbo", "description": "High performance"},
     {"name": "gpt-3.5-turbo", "description": "Legacy, fast"},
+]
+
+# TTS providers
+TTS_PROVIDERS = [
+    {"name": "gtts", "label": "Google TTS", "description": "Natural voice, requires internet"},
+    {"name": "espeak", "label": "eSpeak", "description": "Robotic but fast, works offline"},
+    {"name": "pyttsx3", "label": "pyttsx3", "description": "System voices, works offline"},
 ]
 
 

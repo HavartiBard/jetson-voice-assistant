@@ -6,7 +6,7 @@ A customizable voice assistant designed specifically for the NVIDIA Jetson Nano/
 
 - 🎙️ **Wake word activation** - Customizable wake word (default: "jetson")
 - 🗣️ **Local speech recognition** using faster-whisper (runs on-device) or OpenAI Whisper API
-- 🔊 **Natural text-to-speech** using Google TTS (with espeak fallback for offline use)
+- 🔊 **Configurable text-to-speech** - Google TTS, eSpeak, or pyttsx3 (offline options available)
 - 🤖 **Dual LLM support** - OpenAI API or local Ollama models
 - 🌐 **Admin web portal** for configuration, monitoring, and LLM management
 - 📊 **System stats** with real-time CPU/memory/disk graphs
@@ -194,6 +194,9 @@ Settings are loaded with this priority (highest first):
 | `llm_model` | `gpt-4o-mini` | Model name for the selected provider |
 | `ollama_host` | `http://localhost:11434` | Ollama API endpoint |
 | `audio_record_seconds` | `4` | Recording duration after wake word |
+| `tts_provider` | `gtts` | TTS engine: `gtts`, `espeak`, or `pyttsx3` |
+| `tts_language` | `en` | Language code for text-to-speech |
+| `tts_speed` | `150` | Speech rate for espeak/pyttsx3 (words per minute) |
 
 ## Customization
 
@@ -208,7 +211,7 @@ Extend the assistant by adding new commands to the `process_command` method in `
 | Microphone not detected | Check USB. Run `arecord -l` to list devices |
 | No audio output | Test with `aplay -D plughw:2,0 /usr/share/sounds/alsa/Front_Center.wav` |
 | Wake word not responding | Check logs, try speaking closer to mic |
-| TTS sounds robotic | Check internet (gTTS needs it); espeak is the offline fallback |
+| TTS sounds robotic | Switch to gTTS in admin portal (requires internet) |
 | OpenAI errors | Verify API key in portal, check billing at platform.openai.com |
 | Ollama not connecting | Ensure Ollama is running: `systemctl status ollama` |
 | Settings not applying | Restart services or wait for reload signal |

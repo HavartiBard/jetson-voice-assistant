@@ -7,7 +7,7 @@ import socket
 import time as time_module
 from datetime import datetime
 
-from settings_store import load_settings, save_settings, RECOMMENDED_OLLAMA_MODELS, OPENAI_MODELS
+from settings_store import load_settings, save_settings, RECOMMENDED_OLLAMA_MODELS, OPENAI_MODELS, TTS_PROVIDERS
 from history_store import get_stats_history, get_query_history, record_stats, clear_query_history, get_query_analytics
 from audio_devices import get_audio_input_devices, get_audio_output_devices
 from ollama_client import OllamaClient, check_ollama_status
@@ -875,6 +875,31 @@ def settings():
       </div>
     </div>
 
+    <div class="form-group">
+      <h3 class="form-section-title">Text-to-Speech</h3>
+      <div class="form-row">
+        <div>
+          <label for="tts_provider">TTS Provider</label>
+          <select id="tts_provider" name="tts_provider">
+            {% for p in tts_providers %}
+            <option value="{{ p.name }}" {% if s.get('tts_provider')==p.name %}selected{% endif %}>{{ p.label }} - {{ p.description }}</option>
+            {% endfor %}
+          </select>
+          <div class="hint">Google TTS sounds natural but needs internet; espeak/pyttsx3 work offline</div>
+        </div>
+        <div>
+          <label for="tts_language">TTS Language</label>
+          <input id="tts_language" name="tts_language" value="{{ s.get('tts_language', 'en') }}" />
+          <div class="hint">Language code: en, es, fr, de, etc.</div>
+        </div>
+        <div>
+          <label for="tts_speed">Speech Speed</label>
+          <input id="tts_speed" name="tts_speed" type="number" min="50" max="300" value="{{ s.get('tts_speed', 150) }}" />
+          <div class="hint">Words per minute (espeak/pyttsx3 only)</div>
+        </div>
+      </div>
+    </div>
+
     <button type="submit">💾 Save Settings</button>
   </form>
 </div>
@@ -882,6 +907,7 @@ def settings():
         s=s,
         input_devices=get_audio_input_devices(),
         output_devices=get_audio_output_devices(),
+        tts_providers=TTS_PROVIDERS,
     )
 
     return render_template_string(BASE_TEMPLATE, title="Settings | Jetson Assistant", body=body, flash=request.args.get("ok"), active_page="settings")
@@ -917,6 +943,10 @@ def save_settings_route():
         "audio_channels": _to_int(request.form.get("audio_channels"), current.get("audio_channels", 1)),
         "audio_input_device": request.form.get("audio_input_device") or current.get("audio_input_device", ""),
         "audio_output_device": request.form.get("audio_output_device") or current.get("audio_output_device", ""),
+        # TTS settings
+        "tts_provider": (request.form.get("tts_provider") or current.get("tts_provider", "gtts")).strip(),
+        "tts_language": (request.form.get("tts_language") or current.get("tts_language", "en")).strip(),
+        "tts_speed": _to_int(request.form.get("tts_speed"), current.get("tts_speed", 150)),
     }
 
     save_settings(new_settings)

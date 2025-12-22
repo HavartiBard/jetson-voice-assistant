@@ -89,7 +89,12 @@ class VoiceAssistant:
         self.ollama_host = settings.get('ollama_host', 'http://localhost:11434')
         self.ollama_client = OllamaClient(self.ollama_host) if self.llm_provider == 'ollama' else None
         
-        print(f"Settings loaded: wake_word='{self.wake_word}', llm={self.llm_provider}/{self.llm_model}", flush=True)
+        # TTS settings
+        self.tts_provider = settings.get('tts_provider', 'gtts')
+        self.tts_language = settings.get('tts_language', 'en')
+        self.tts_speed = int(settings.get('tts_speed', 150))
+        
+        print(f"Settings loaded: wake_word='{self.wake_word}', llm={self.llm_provider}/{self.llm_model}, tts={self.tts_provider}", flush=True)
     
     def check_reload(self):
         """Check if settings reload was requested and reload if needed."""
@@ -123,23 +128,40 @@ class VoiceAssistant:
         return "default"
     
     def speak(self, text):
-        """Convert text to speech using gTTS (natural voice) with espeak fallback"""
+        """Convert text to speech using configured TTS provider."""
         print(f"Assistant: {text}", flush=True)
         play_device = self.audio_output_device if hasattr(self, 'audio_output_device') else 'default'
+        tts_provider = getattr(self, 'tts_provider', 'gtts')
+        tts_lang = getattr(self, 'tts_language', 'en')
+        tts_speed = getattr(self, 'tts_speed', 150)
         
-        # Try gTTS first (natural Google voice, requires internet)
+        # Try the configured provider first
+        if tts_provider == 'gtts':
+            if self._speak_gtts(text, play_device, tts_lang):
+                return
+            print("gTTS failed, falling back to espeak", flush=True)
+            self._speak_espeak(text, play_device, tts_lang, tts_speed)
+        elif tts_provider == 'espeak':
+            self._speak_espeak(text, play_device, tts_lang, tts_speed)
+        elif tts_provider == 'pyttsx3':
+            if not self._speak_pyttsx3(text, tts_speed):
+                print("pyttsx3 failed, falling back to espeak", flush=True)
+                self._speak_espeak(text, play_device, tts_lang, tts_speed)
+        else:
+            # Unknown provider, default to espeak
+            self._speak_espeak(text, play_device, tts_lang, tts_speed)
+    
+    def _speak_gtts(self, text, play_device, lang='en'):
+        """Speak using Google TTS (requires internet)."""
         try:
             from gtts import gTTS
             import io
             
-            # Generate MP3 to memory buffer (no disk write)
             mp3_buffer = io.BytesIO()
-            tts = gTTS(text=text, lang='en', slow=False)
+            tts = gTTS(text=text, lang=lang, slow=False)
             tts.write_to_fp(mp3_buffer)
             mp3_buffer.seek(0)
             
-            # Pipe MP3 through ffmpeg to convert to WAV, then to aplay
-            # ffmpeg reads from stdin (pipe:0) instead of file
             ffmpeg = subprocess.Popen(
                 ['ffmpeg', '-i', 'pipe:0', '-f', 'wav', '-acodec', 'pcm_s16le', '-ar', '48000', 'pipe:1'],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -149,20 +171,35 @@ class VoiceAssistant:
             ffmpeg.stdin.write(mp3_buffer.read())
             ffmpeg.stdin.close()
             aplay.communicate()
-            return
+            return True
         except Exception as e:
-            print(f"gTTS error (falling back to espeak): {e}", flush=True)
-        
-        # Fallback to espeak (robotic but reliable, no internet needed)
+            print(f"gTTS error: {e}", flush=True)
+            return False
+    
+    def _speak_espeak(self, text, play_device, lang='en', speed=150):
+        """Speak using espeak (offline, robotic voice)."""
         try:
-            espeak_cmd = ['espeak', '-s', '150', '-v', 'en', '--stdout', text]
+            espeak_cmd = ['espeak', '-s', str(speed), '-v', lang, '--stdout', text]
             aplay_cmd = ['aplay', '-D', play_device, '-q']
             espeak_proc = subprocess.Popen(espeak_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             aplay_proc = subprocess.Popen(aplay_cmd, stdin=espeak_proc.stdout, stderr=subprocess.PIPE)
             espeak_proc.stdout.close()
             aplay_proc.communicate()
+            return True
         except Exception as e:
-            print(f"TTS error: {e}", flush=True)
+            print(f"espeak error: {e}", flush=True)
+            return False
+    
+    def _speak_pyttsx3(self, text, speed=150):
+        """Speak using pyttsx3 (offline, system voices)."""
+        try:
+            self.engine.setProperty('rate', speed)
+            self.engine.say(text)
+            self.engine.runAndWait()
+            return True
+        except Exception as e:
+            print(f"pyttsx3 error: {e}", flush=True)
+            return False
 
     def _record_audio(self):
         """Record audio using arecord directly to memory (no disk writes)."""
