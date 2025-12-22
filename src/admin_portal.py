@@ -536,25 +536,26 @@ def dashboard():
     body = render_template_string(
         """
 <div class="dashboard-grid">
-  <!-- Health Status Banner -->
-  <div class="health-banner {{ 'health-ok' if health_status == 'healthy' else 'health-warn' }}">
-    <div class="health-icon">{{ '✓' if health_status == 'healthy' else '⚠' }}</div>
-    <div class="health-text">
-      <strong>System {{ health_status.title() }}</strong>
-      <span>Uptime: {{ jetson_stats.uptime }}</span>
+  <!-- Status Banner Row -->
+  <div class="status-banner-row">
+    <!-- Health Status Banner -->
+    <div class="health-banner {{ 'health-ok' if health_status == 'healthy' else 'health-warn' }}">
+      <div class="health-icon">{{ '✓' if health_status == 'healthy' else '⚠' }}</div>
+      <div class="health-text">
+        <strong>System {{ health_status.title() }}</strong>
+        <span>Uptime: {{ jetson_stats.uptime }}</span>
+      </div>
     </div>
-  </div>
 
-  <!-- Microphone Mute Status -->
-  {% if mute_status.has_hardware_mute %}
-  <div id="mute-banner" class="mute-banner {{ 'mute-active' if mute_status.is_muted else 'mute-inactive' }}">
-    <div class="mute-icon">{{ '🔇' if mute_status.is_muted else '🎙️' }}</div>
-    <div class="mute-text">
-      <strong>Microphone {{ 'Muted' if mute_status.is_muted else 'Active' }}</strong>
-      <span>{{ 'Wake word detection paused' if mute_status.is_muted else 'Listening for wake word' }}</span>
+    <!-- Microphone Status Card -->
+    <div id="mute-banner" class="mic-status-card {{ 'mic-muted' if mute_status.is_muted else 'mic-active' }}">
+      <div class="mic-icon">{{ '🔇' if mute_status.is_muted else '🎙️' }}</div>
+      <div class="mic-text">
+        <strong>{{ 'Muted' if mute_status.is_muted else 'Listening' }}</strong>
+        <span>{{ 'Paused' if mute_status.is_muted else 'Active' }}</span>
+      </div>
     </div>
   </div>
-  {% endif %}
 
   <!-- Service Status Grid -->
   <div class="card">
@@ -695,24 +696,30 @@ def dashboard():
   .health-text strong { font-size: 1.2rem; }
   .health-text span { color: var(--text-secondary); font-size: 0.9rem; }
   
-  .mute-banner {
-    display: flex; align-items: center; gap: 16px;
-    padding: 16px 24px; border-radius: 12px;
+  .status-banner-row {
+    display: flex; gap: 16px; align-items: stretch;
   }
-  .mute-active {
+  .status-banner-row .health-banner { flex: 1; }
+  
+  .mic-status-card {
+    display: flex; align-items: center; gap: 12px;
+    padding: 16px 20px; border-radius: 12px;
+    min-width: 140px;
+  }
+  .mic-muted {
     background: linear-gradient(135deg, rgba(239, 68, 68, 0.15) 0%, rgba(239, 68, 68, 0.05) 100%);
     border: 1px solid rgba(239, 68, 68, 0.3);
   }
-  .mute-inactive {
+  .mic-active {
     background: linear-gradient(135deg, rgba(34, 197, 94, 0.1) 0%, rgba(34, 197, 94, 0.02) 100%);
     border: 1px solid rgba(34, 197, 94, 0.2);
   }
-  .mute-icon { font-size: 28px; }
-  .mute-text { display: flex; flex-direction: column; }
-  .mute-text strong { font-size: 1.1rem; }
-  .mute-active .mute-text strong { color: var(--danger); }
-  .mute-inactive .mute-text strong { color: var(--success); }
-  .mute-text span { color: var(--text-secondary); font-size: 0.85rem; }
+  .mic-icon { font-size: 24px; }
+  .mic-text { display: flex; flex-direction: column; }
+  .mic-text strong { font-size: 1rem; }
+  .mic-muted .mic-text strong { color: var(--danger); }
+  .mic-active .mic-text strong { color: var(--success); }
+  .mic-text span { color: var(--text-secondary); font-size: 0.8rem; }
   
   .service-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
   .service-item {
@@ -801,22 +808,12 @@ function updateMuteStatus() {
   fetch('/api/mute-status')
     .then(r => r.json())
     .then(data => {
-      const banner = document.getElementById('mute-banner');
-      if (!banner && data.has_hardware_mute) {
-        // Need to create banner - reload page
-        location.reload();
-        return;
-      }
-      if (banner) {
-        if (!data.has_hardware_mute) {
-          banner.style.display = 'none';
-          return;
-        }
-        banner.style.display = 'flex';
-        banner.className = 'mute-banner ' + (data.is_muted ? 'mute-active' : 'mute-inactive');
-        banner.querySelector('.mute-icon').textContent = data.is_muted ? '🔇' : '🎙️';
-        banner.querySelector('.mute-text strong').textContent = 'Microphone ' + (data.is_muted ? 'Muted' : 'Active');
-        banner.querySelector('.mute-text span').textContent = data.is_muted ? 'Wake word detection paused' : 'Listening for wake word';
+      const card = document.getElementById('mute-banner');
+      if (card) {
+        card.className = 'mic-status-card ' + (data.is_muted ? 'mic-muted' : 'mic-active');
+        card.querySelector('.mic-icon').textContent = data.is_muted ? '🔇' : '🎙️';
+        card.querySelector('.mic-text strong').textContent = data.is_muted ? 'Muted' : 'Listening';
+        card.querySelector('.mic-text span').textContent = data.is_muted ? 'Paused' : 'Active';
       }
     })
     .catch(e => console.log('Mute status fetch error:', e));
