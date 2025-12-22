@@ -5,7 +5,7 @@ import os
 import random
 import pyjokes
 from dotenv import load_dotenv
-import openai
+from openai import OpenAI
 import json
 import tempfile
 import subprocess
@@ -34,7 +34,8 @@ class VoiceAssistant:
         settings = load_settings()
         
         # OpenAI API key: settings takes priority, then .env
-        openai.api_key = settings.get('openai_api_key') or os.getenv('OPENAI_API_KEY')
+        api_key = settings.get('openai_api_key') or os.getenv('OPENAI_API_KEY')
+        self.openai_client = OpenAI(api_key=api_key) if api_key else None
         self.wake_word = (os.getenv('WAKE_WORD') or settings.get('wake_word') or 'jetson').strip().lower()
 
         self.whisper_mode = (os.getenv('WHISPER_MODE') or settings.get('whisper_mode') or 'local').strip().lower()
@@ -244,20 +245,24 @@ class VoiceAssistant:
             
         else:
             # Use OpenAI for general conversation
-            try:
-                response = openai.ChatCompletion.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant."},
-                        {"role": "user", "content": command}
-                    ]
-                )
-                response_text = response.choices[0].message['content']
-                self.speak(response_text)
-            except Exception as e:
-                print(f"Error with OpenAI API: {e}")
-                response_text = "I'm not sure how to respond to that."
-                self.speak("I'm not sure how to respond to that. Could you try something else?")
+            if self.openai_client:
+                try:
+                    response = self.openai_client.chat.completions.create(
+                        model="gpt-3.5-turbo",
+                        messages=[
+                            {"role": "system", "content": "You are a helpful voice assistant. Keep responses brief and conversational."},
+                            {"role": "user", "content": command}
+                        ]
+                    )
+                    response_text = response.choices[0].message.content
+                    self.speak(response_text)
+                except Exception as e:
+                    print(f"Error with OpenAI API: {e}", flush=True)
+                    response_text = "I had trouble connecting to OpenAI."
+                    self.speak("I had trouble connecting to OpenAI. Please try again.")
+            else:
+                response_text = "OpenAI API key not configured."
+                self.speak("I don't have an OpenAI API key configured. Please add one in the admin portal.")
         
         # Record query to history
         duration_ms = int((time.time() - start_time) * 1000)
