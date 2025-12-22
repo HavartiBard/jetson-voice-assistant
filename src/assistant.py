@@ -84,26 +84,49 @@ class VoiceAssistant:
         return "default"
     
     def speak(self, text):
-        """Convert text to speech using espeak + aplay for Jabra output"""
+        """Convert text to speech using gTTS (natural voice) with espeak fallback"""
         print(f"Assistant: {text}", flush=True)
+        play_device = self.audio_device.replace('hw:', 'plughw:')
+        
+        # Try gTTS first (natural Google voice, requires internet)
         try:
-            # Generate speech with espeak, play through Jabra with aplay
-            # Get the playback device from the recording device (hw:2,0 -> plughw:2,0)
-            play_device = self.audio_device.replace('hw:', 'plughw:')
-            
-            # Use espeak to generate wav, pipe to aplay
+            from gtts import gTTS
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
+                tts = gTTS(text=text, lang='en', slow=False)
+                tts.save(f.name)
+                # Convert mp3 to wav and play through Jabra
+                # Use ffmpeg if available, otherwise mpg123
+                try:
+                    subprocess.run(
+                        ['ffmpeg', '-i', f.name, '-f', 'wav', '-acodec', 'pcm_s16le', '-ar', '48000', '-'],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
+                    )
+                    # ffmpeg available, use it
+                    ffmpeg = subprocess.Popen(
+                        ['ffmpeg', '-i', f.name, '-f', 'wav', '-acodec', 'pcm_s16le', '-ar', '48000', '-'],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                    )
+                    aplay = subprocess.Popen(['aplay', '-D', play_device, '-q'], stdin=ffmpeg.stdout, stderr=subprocess.PIPE)
+                    ffmpeg.stdout.close()
+                    aplay.communicate()
+                except FileNotFoundError:
+                    # No ffmpeg, try mpg123 to play mp3 directly
+                    subprocess.run(['mpg123', '-a', play_device, '-q', f.name], check=True)
+                os.unlink(f.name)
+                return
+        except Exception as e:
+            print(f"gTTS error (falling back to espeak): {e}", flush=True)
+        
+        # Fallback to espeak (robotic but reliable, no internet needed)
+        try:
             espeak_cmd = ['espeak', '-s', '150', '-v', 'en', '--stdout', text]
             aplay_cmd = ['aplay', '-D', play_device, '-q']
-            
             espeak_proc = subprocess.Popen(espeak_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             aplay_proc = subprocess.Popen(aplay_cmd, stdin=espeak_proc.stdout, stderr=subprocess.PIPE)
             espeak_proc.stdout.close()
             aplay_proc.communicate()
         except Exception as e:
             print(f"TTS error: {e}", flush=True)
-            # Fallback to pyttsx3
-            self.engine.say(text)
-            self.engine.runAndWait()
 
     def _record_audio(self):
         """Record audio using arecord and return float32 mono samples."""
