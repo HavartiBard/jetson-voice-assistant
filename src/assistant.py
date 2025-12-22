@@ -21,94 +21,6 @@ from audio_devices import check_audio_is_silent, write_mute_state
 import time
 
 
-class PersistentAudioStream:
-    """Manages a persistent arecord process to prevent device open/close from resetting Jabra mute state."""
-    
-    def __init__(self, device, sample_rate=16000, channels=1):
-        self.device = device
-        self.sample_rate = sample_rate
-        self.channels = channels
-        self.process = None
-        self._restart_count = 0
-        self._start_stream()
-    
-    def _start_stream(self):
-        """Start the persistent arecord process."""
-        if self.process is not None:
-            self._stop_stream()
-        
-        # Use a larger buffer to prevent underruns
-        cmd = [
-            'arecord',
-            '-D', self.device,
-            '-f', 'S16_LE',
-            '-r', str(self.sample_rate),
-            '-c', str(self.channels),
-            '-t', 'raw',
-            '-q',
-            '-B', '500000',  # 500ms buffer time in microseconds
-        ]
-        self.process = subprocess.Popen(
-            cmd, 
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE,
-            bufsize=0  # Unbuffered
-        )
-        self._restart_count = 0
-        print(f"Started persistent audio stream on {self.device}", flush=True)
-    
-    def _stop_stream(self):
-        """Stop the persistent arecord process."""
-        if self.process:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-            self.process = None
-    
-    def read_chunk(self, duration_seconds):
-        """Read a chunk of audio data from the stream.
-        
-        Args:
-            duration_seconds: How many seconds of audio to read
-            
-        Returns:
-            Raw PCM bytes
-        """
-        # Calculate bytes needed: sample_rate * channels * 2 bytes per sample * duration
-        bytes_needed = int(self.sample_rate * self.channels * 2 * duration_seconds)
-        
-        # Check if process is still running
-        if self.process is None:
-            self._start_stream()
-        elif self.process.poll() is not None:
-            # Process died, check why and restart
-            stderr = self.process.stderr.read().decode() if self.process.stderr else ""
-            if stderr:
-                print(f"Audio stream error: {stderr[:200]}", flush=True)
-            self._restart_count += 1
-            if self._restart_count > 3:
-                print("Too many restarts, waiting before retry...", flush=True)
-                time.sleep(1)
-                self._restart_count = 0
-            self._start_stream()
-        
-        try:
-            raw_bytes = self.process.stdout.read(bytes_needed)
-            if len(raw_bytes) < bytes_needed:
-                # Short read - pad with silence
-                raw_bytes += b'\x00' * (bytes_needed - len(raw_bytes))
-            return raw_bytes
-        except Exception as e:
-            print(f"Error reading from audio stream: {e}", flush=True)
-            return b'\x00' * bytes_needed
-    
-    def close(self):
-        """Close the audio stream."""
-        self._stop_stream()
-
-
 class VoiceAssistant:
     def __init__(self):
         # Initialize text-to-speech engine
@@ -143,14 +55,6 @@ class VoiceAssistant:
             )
         
         print(f"Using audio device: {self.audio_device}", flush=True)
-        
-        # Initialize persistent audio stream to prevent Jabra mute reset on device open
-        # Always use mono (1 channel) for the persistent stream - Jabra hw device only supports mono
-        self._audio_stream = PersistentAudioStream(
-            self.audio_device, 
-            sample_rate=self.audio_sample_rate,
-            channels=1
-        )
         
         # Hardware mute state tracking with hysteresis
         self._last_mute_state = False
@@ -345,19 +249,30 @@ class VoiceAssistant:
             return False
 
     def _record_audio(self):
-        """Record audio from persistent stream (prevents Jabra mute reset).
+        """Record audio using arecord directly to memory (no disk writes).
         
         Returns:
             Tuple of (audio_samples, raw_bytes) - numpy array and raw PCM bytes
         """
-        duration = self.audio_record_seconds
+        duration = int(self.audio_record_seconds)
         samplerate = self.audio_sample_rate
 
-        print(f"Listening... (recording {int(duration)}s)", flush=True)
+        print(f"Listening... (recording {duration}s)", flush=True)
         
         try:
-            # Read from persistent audio stream
-            raw_bytes = self._audio_stream.read_chunk(duration)
+            # Record directly to stdout as raw PCM (no disk write)
+            cmd = [
+                'arecord',
+                '-D', self.audio_device,
+                '-f', 'S16_LE',
+                '-r', str(samplerate),
+                '-c', '1',
+                '-d', str(duration),
+                '-t', 'raw',
+                '-q',
+            ]
+            result = subprocess.run(cmd, capture_output=True, check=True)
+            raw_bytes = result.stdout
             
             # Convert raw PCM bytes to float32 numpy array
             audio_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
