@@ -44,7 +44,7 @@ A customizable voice assistant designed specifically for the NVIDIA Jetson Nano/
 - NVIDIA Jetson Nano/Orin with JetPack (or any Linux system)
 - Python 3.10+
 - USB microphone/speaker (e.g., Jabra SPEAK 510) or ALSA-compatible audio
-- Internet connection (for Google TTS and OpenAI) OR local Ollama for fully offline use
+- Internet connection for cloud features (Google TTS, OpenAI), or run fully offline with Ollama + eSpeak
 - **Optional**: OpenAI API key for cloud LLM and Whisper API
 - **Optional**: Ollama for local LLM inference
 
