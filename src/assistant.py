@@ -537,11 +537,11 @@ class VoiceAssistant:
             if is_muted:
                 # Audio is silent - device is muted, skip transcription
                 return False, None
-            
-            # Skip transcription if audio is just background noise (save CPU)
-            if not check_audio_has_speech(raw_bytes):
-                amp = get_audio_amplitude(raw_bytes)
-                print(f"Skipping transcription (low speech energy) max_amp={amp}", flush=True)
+
+            # Don't aggressively gate wake-word detection. Only skip if the signal
+            # is extremely low (but non-zero) to avoid wasting CPU on near-silence.
+            amp = get_audio_amplitude(raw_bytes)
+            if amp < 30:
                 return False, None
             
             text = self._transcribe(audio_samples)
