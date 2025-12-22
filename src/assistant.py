@@ -175,15 +175,7 @@ class VoiceAssistant:
         self._load_settings()
 
         self._whisper_model = None
-        if self.whisper_mode == 'local':
-            # device choices: 'cpu', 'cuda'
-            # compute_type choices: 'int8', 'int8_float16', 'float16', 'float32'
-            # On Jetson Nano, CPU+int8 is typically the most reliable out of the box.
-            self._whisper_model = WhisperModel(
-                self.whisper_model_size,
-                device='cpu',
-                compute_type='int8',
-            )
+        self._init_whisper_model()
         
         print(f"Using audio device: {self.audio_device}", flush=True)
 
@@ -277,11 +269,30 @@ class VoiceAssistant:
                 os.unlink(self._reload_signal_path)
                 print("Reload signal detected, reloading settings...", flush=True)
                 old_wake_word = self.wake_word
+                old_whisper_mode = getattr(self, 'whisper_mode', None)
+                old_whisper_model_size = getattr(self, 'whisper_model_size', None)
                 self._load_settings()
+
+                if old_whisper_mode != self.whisper_mode or old_whisper_model_size != self.whisper_model_size:
+                    print(
+                        f"Reloading Whisper model: mode={self.whisper_mode}, size={self.whisper_model_size}",
+                        flush=True,
+                    )
+                    self._init_whisper_model()
                 if old_wake_word != self.wake_word:
                     self.speak(f"Wake word changed to {self.wake_word}")
             except Exception as e:
                 print(f"Error reloading settings: {e}", flush=True)
+
+    def _init_whisper_model(self):
+        if self.whisper_mode == 'local':
+            self._whisper_model = WhisperModel(
+                self.whisper_model_size,
+                device='cpu',
+                compute_type='int8',
+            )
+        else:
+            self._whisper_model = None
     
     def check_and_update_mute_status(self, audio_data: bytes) -> bool:
         """Check if microphone is hardware muted and update state.
