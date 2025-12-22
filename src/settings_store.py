@@ -12,7 +12,29 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "audio_sample_rate": 16000,
     "audio_channels": 1,
     "audio_record_seconds": 4,
+    # LLM Settings
+    "llm_provider": "openai",  # "openai" or "ollama"
+    "llm_model": "gpt-4o-mini",  # Model name for the selected provider
+    "ollama_host": "http://localhost:11434",  # Ollama API endpoint
 }
+
+# Curated list of Ollama models suitable for Jetson (limited RAM)
+RECOMMENDED_OLLAMA_MODELS = [
+    {"name": "llama3.2:1b", "size": "1.3GB", "description": "Fast, general purpose"},
+    {"name": "llama3.2:3b", "size": "2.0GB", "description": "Better quality, still fast"},
+    {"name": "phi3:mini", "size": "2.3GB", "description": "Microsoft's efficient model"},
+    {"name": "gemma2:2b", "size": "1.6GB", "description": "Google's compact model"},
+    {"name": "qwen2.5:1.5b", "size": "1.0GB", "description": "Alibaba's efficient model"},
+    {"name": "tinyllama", "size": "637MB", "description": "Ultra-lightweight"},
+]
+
+# OpenAI models
+OPENAI_MODELS = [
+    {"name": "gpt-4o-mini", "description": "Fast and affordable"},
+    {"name": "gpt-4o", "description": "Most capable"},
+    {"name": "gpt-4-turbo", "description": "High performance"},
+    {"name": "gpt-3.5-turbo", "description": "Legacy, fast"},
+]
 
 
 def _settings_path() -> str:

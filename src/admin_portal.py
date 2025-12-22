@@ -7,9 +7,10 @@ import socket
 import time as time_module
 from datetime import datetime
 
-from settings_store import load_settings, save_settings
+from settings_store import load_settings, save_settings, RECOMMENDED_OLLAMA_MODELS, OPENAI_MODELS
 from history_store import get_stats_history, get_query_history, record_stats, clear_query_history, get_query_analytics
 from audio_devices import get_audio_input_devices, get_audio_output_devices
+from ollama_client import OllamaClient, check_ollama_status
 
 # Reload signal file path
 RELOAD_SIGNAL_PATH = os.path.join(
@@ -378,6 +379,7 @@ BASE_TEMPLATE = """
       <nav>
         <a href="{{ url_for('dashboard') }}" {% if active_page == 'dashboard' %}class="active"{% endif %}>Dashboard</a>
         <a href="{{ url_for('settings') }}" {% if active_page == 'settings' %}class="active"{% endif %}>Settings</a>
+        <a href="{{ url_for('llm_settings') }}" {% if active_page == 'llm' %}class="active"{% endif %}>LLM Models</a>
         <a href="{{ url_for('system_stats') }}" {% if active_page == 'stats' %}class="active"{% endif %}>System Stats</a>
         <a href="{{ url_for('query_history') }}" {% if active_page == 'history' %}class="active"{% endif %}>Query History</a>
       </nav>
@@ -926,6 +928,314 @@ def save_settings_route():
         print(f"Failed to trigger reload signal: {e}")
     
     return redirect(url_for("settings", ok="Settings saved and applied"))
+
+
+@app.get("/llm")
+def llm_settings():
+    """LLM model configuration page."""
+    s = load_settings()
+    ollama_status = check_ollama_status(s.get("ollama_host", "http://localhost:11434"))
+    
+    body = render_template_string(
+        """
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">LLM Provider</h2>
+  </div>
+  <form method="post" action="{{ url_for('save_llm_settings') }}">
+    <div class="form-group">
+      <div class="form-row">
+        <div>
+          <label for="llm_provider">Provider</label>
+          <select id="llm_provider" name="llm_provider" onchange="toggleProvider()">
+            <option value="openai" {% if s.llm_provider == 'openai' %}selected{% endif %}>OpenAI API</option>
+            <option value="ollama" {% if s.llm_provider == 'ollama' %}selected{% endif %}>Ollama (Local)</option>
+          </select>
+          <div class="hint">OpenAI requires API key; Ollama runs models locally</div>
+        </div>
+        <div>
+          <label for="ollama_host">Ollama Host</label>
+          <input id="ollama_host" name="ollama_host" value="{{ s.ollama_host }}" placeholder="http://localhost:11434" />
+          <div class="hint">Ollama API endpoint (usually localhost:11434)</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- OpenAI Model Selection -->
+    <div id="openai-section" class="provider-section">
+      <div class="form-group">
+        <label for="openai_model">OpenAI Model</label>
+        <select id="openai_model" name="openai_model">
+          {% for m in openai_models %}
+          <option value="{{ m.name }}" {% if s.llm_model == m.name %}selected{% endif %}>{{ m.name }} - {{ m.description }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <!-- Ollama Model Selection -->
+    <div id="ollama-section" class="provider-section">
+      <div class="ollama-status {{ 'status-ok' if ollama_status.available else 'status-err' }}">
+        <span class="status-dot"></span>
+        <span>Ollama: {{ 'Connected' if ollama_status.available else 'Not available' }}</span>
+        {% if ollama_status.available %}
+        <span class="status-detail">{{ ollama_status.model_count }} model(s) installed</span>
+        {% endif %}
+      </div>
+      
+      {% if ollama_status.available and ollama_status.models %}
+      <div class="form-group">
+        <label for="ollama_model">Installed Models</label>
+        <select id="ollama_model" name="ollama_model">
+          {% for m in ollama_status.models %}
+          <option value="{{ m.name }}" {% if s.llm_model == m.name %}selected{% endif %}>{{ m.name }} ({{ m.size_human }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% else %}
+      <div class="empty-hint">No models installed. Use the panel below to install one.</div>
+      {% endif %}
+    </div>
+
+    <button type="submit">💾 Save LLM Settings</button>
+  </form>
+</div>
+
+<!-- Model Installation -->
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Install Ollama Models</h2>
+    <span class="time-badge">Recommended for Jetson</span>
+  </div>
+  
+  <div class="model-grid">
+    {% for m in recommended_models %}
+    <div class="model-card">
+      <div class="model-header">
+        <strong>{{ m.name }}</strong>
+        <span class="model-size">{{ m.size }}</span>
+      </div>
+      <div class="model-desc">{{ m.description }}</div>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="installModel('{{ m.name }}')" 
+        {% if not ollama_status.available %}disabled{% endif %}>
+        Install
+      </button>
+    </div>
+    {% endfor %}
+  </div>
+  
+  <div id="install-progress" class="install-progress" style="display: none;">
+    <div class="progress-header">
+      <span id="progress-model">Installing...</span>
+      <span id="progress-status"></span>
+    </div>
+    <div class="progress-bar">
+      <div id="progress-fill" class="progress-fill"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Installed Models Management -->
+{% if ollama_status.available and ollama_status.models %}
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Manage Installed Models</h2>
+  </div>
+  <table class="query-table">
+    <thead>
+      <tr>
+        <th>Model</th>
+        <th>Size</th>
+        <th>Family</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in ollama_status.models %}
+      <tr>
+        <td><strong>{{ m.name }}</strong></td>
+        <td>{{ m.size_human }}</td>
+        <td>{{ m.family or '—' }}</td>
+        <td>
+          <button type="button" class="btn btn-danger btn-sm" onclick="deleteModel('{{ m.name }}')">Delete</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<style>
+  .provider-section { display: none; margin-top: 16px; }
+  .provider-section.active { display: block; }
+  .ollama-status {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; background: var(--bg-secondary);
+    border-radius: 8px; margin-bottom: 16px;
+  }
+  .status-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .status-ok .status-dot { background: var(--success); }
+  .status-err .status-dot { background: var(--danger); }
+  .status-detail { color: var(--text-muted); font-size: 0.85rem; margin-left: auto; }
+  .empty-hint { color: var(--text-muted); padding: 16px; text-align: center; }
+  
+  .model-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .model-card {
+    padding: 16px; background: var(--bg-secondary);
+    border: 1px solid var(--border); border-radius: 10px;
+  }
+  .model-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .model-size { font-size: 0.8rem; color: var(--accent); background: rgba(99,102,241,0.1); padding: 2px 8px; border-radius: 4px; }
+  .model-desc { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px; }
+  .btn-sm { padding: 8px 16px; font-size: 0.85rem; }
+  
+  .install-progress { margin-top: 20px; padding: 16px; background: var(--bg-secondary); border-radius: 10px; }
+  .progress-header { display: flex; justify-content: space-between; margin-bottom: 10px; }
+  .progress-bar { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--accent); width: 0%; transition: width 0.3s; }
+</style>
+
+<script>
+function toggleProvider() {
+  const provider = document.getElementById('llm_provider').value;
+  document.querySelectorAll('.provider-section').forEach(s => s.classList.remove('active'));
+  document.getElementById(provider + '-section').classList.add('active');
+}
+toggleProvider();
+
+async function installModel(name) {
+  const progress = document.getElementById('install-progress');
+  const progressModel = document.getElementById('progress-model');
+  const progressStatus = document.getElementById('progress-status');
+  const progressFill = document.getElementById('progress-fill');
+  
+  progress.style.display = 'block';
+  progressModel.textContent = 'Installing ' + name + '...';
+  progressStatus.textContent = 'Starting...';
+  progressFill.style.width = '0%';
+  
+  try {
+    const resp = await fetch('/api/ollama/pull', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model: name})
+    });
+    const data = await resp.json();
+    if (data.success) {
+      progressStatus.textContent = 'Complete!';
+      progressFill.style.width = '100%';
+      setTimeout(() => location.reload(), 1000);
+    } else {
+      progressStatus.textContent = 'Error: ' + (data.error || 'Unknown');
+    }
+  } catch (e) {
+    progressStatus.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function deleteModel(name) {
+  if (!confirm('Delete model ' + name + '?')) return;
+  try {
+    const resp = await fetch('/api/ollama/delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model: name})
+    });
+    const data = await resp.json();
+    if (data.success) {
+      location.reload();
+    } else {
+      alert('Error: ' + (data.error || 'Unknown'));
+    }
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+</script>
+""",
+        s=s,
+        ollama_status=ollama_status,
+        openai_models=OPENAI_MODELS,
+        recommended_models=RECOMMENDED_OLLAMA_MODELS,
+    )
+
+    return render_template_string(BASE_TEMPLATE, title="LLM Models | Jetson Assistant", body=body, flash=request.args.get("ok"), active_page="llm")
+
+
+@app.post("/llm")
+def save_llm_settings():
+    """Save LLM configuration."""
+    current = load_settings()
+    
+    provider = request.form.get("llm_provider", "openai").strip()
+    ollama_host = request.form.get("ollama_host", "http://localhost:11434").strip()
+    
+    # Get model based on provider
+    if provider == "openai":
+        model = request.form.get("openai_model", "gpt-4o-mini").strip()
+    else:
+        model = request.form.get("ollama_model", "").strip()
+    
+    current["llm_provider"] = provider
+    current["llm_model"] = model
+    current["ollama_host"] = ollama_host
+    
+    save_settings(current)
+    
+    # Trigger reload
+    try:
+        os.makedirs(os.path.dirname(RELOAD_SIGNAL_PATH), exist_ok=True)
+        with open(RELOAD_SIGNAL_PATH, 'w') as f:
+            f.write('reload')
+    except Exception:
+        pass
+    
+    return redirect(url_for("llm_settings", ok="LLM settings saved"))
+
+
+@app.post("/api/ollama/pull")
+def api_ollama_pull():
+    """Pull/install an Ollama model."""
+    data = request.get_json() or {}
+    model = data.get("model", "")
+    if not model:
+        return jsonify({"success": False, "error": "No model specified"})
+    
+    settings = load_settings()
+    client = OllamaClient(settings.get("ollama_host", "http://localhost:11434"))
+    
+    # Pull model (blocking for simplicity - could be made async)
+    last_status = ""
+    for update in client.pull_model(model):
+        if "error" in update:
+            return jsonify({"success": False, "error": update["error"]})
+        last_status = update.get("status", "")
+    
+    return jsonify({"success": True, "status": last_status})
+
+
+@app.post("/api/ollama/delete")
+def api_ollama_delete():
+    """Delete an Ollama model."""
+    data = request.get_json() or {}
+    model = data.get("model", "")
+    if not model:
+        return jsonify({"success": False, "error": "No model specified"})
+    
+    settings = load_settings()
+    client = OllamaClient(settings.get("ollama_host", "http://localhost:11434"))
+    
+    success = client.delete_model(model)
+    return jsonify({"success": success})
+
+
+@app.get("/api/ollama/status")
+def api_ollama_status():
+    """Get Ollama status and models."""
+    settings = load_settings()
+    status = check_ollama_status(settings.get("ollama_host", "http://localhost:11434"))
+    return jsonify(status)
 
 
 @app.get("/stats")

@@ -16,6 +16,7 @@ from faster_whisper import WhisperModel
 
 from settings_store import load_settings
 from history_store import record_query
+from ollama_client import OllamaClient
 import time
 
 class VoiceAssistant:
@@ -82,7 +83,13 @@ class VoiceAssistant:
         # For backward compatibility
         self.audio_device = self.audio_input_device
         
-        print(f"Settings loaded: wake_word='{self.wake_word}', input='{self.audio_input_device}', output='{self.audio_output_device}'", flush=True)
+        # LLM settings
+        self.llm_provider = settings.get('llm_provider', 'openai')
+        self.llm_model = settings.get('llm_model', 'gpt-4o-mini')
+        self.ollama_host = settings.get('ollama_host', 'http://localhost:11434')
+        self.ollama_client = OllamaClient(self.ollama_host) if self.llm_provider == 'ollama' else None
+        
+        print(f"Settings loaded: wake_word='{self.wake_word}', llm={self.llm_provider}/{self.llm_model}", flush=True)
     
     def check_reload(self):
         """Check if settings reload was requested and reload if needed."""
@@ -356,11 +363,42 @@ class VoiceAssistant:
             return False
             
         else:
-            # Use OpenAI for general conversation
-            if self.openai_client:
+            # Use configured LLM provider for general conversation
+            prompt_tokens = 0
+            completion_tokens = 0
+            total_tokens = 0
+            model_used = ""
+            
+            if self.llm_provider == "ollama" and self.ollama_client:
+                # Use Ollama for local LLM
+                try:
+                    result = self.ollama_client.chat(
+                        model=self.llm_model,
+                        messages=[
+                            {"role": "system", "content": "You are a helpful voice assistant. Keep responses brief and conversational."},
+                            {"role": "user", "content": command}
+                        ]
+                    )
+                    if "error" in result:
+                        print(f"Ollama error: {result['error']}", flush=True)
+                        response_text = "I had trouble with the local model."
+                        self.speak("I had trouble connecting to the local model. Please check Ollama is running.")
+                    else:
+                        response_text = result.get("content", "")
+                        prompt_tokens = result.get("prompt_tokens", 0)
+                        completion_tokens = result.get("completion_tokens", 0)
+                        total_tokens = result.get("total_tokens", 0)
+                        model_used = result.get("model", self.llm_model)
+                        self.speak(response_text)
+                except Exception as e:
+                    print(f"Error with Ollama: {e}", flush=True)
+                    response_text = "I had trouble with the local model."
+                    self.speak("I had trouble with the local model. Please try again.")
+            elif self.openai_client:
+                # Use OpenAI API
                 try:
                     response = self.openai_client.chat.completions.create(
-                        model="gpt-4o-mini",
+                        model=self.llm_model,
                         messages=[
                             {"role": "system", "content": "You are a helpful voice assistant. Keep responses brief and conversational."},
                             {"role": "user", "content": command}
@@ -379,8 +417,8 @@ class VoiceAssistant:
                     response_text = "I had trouble connecting to OpenAI."
                     self.speak("I had trouble connecting to OpenAI. Please try again.")
             else:
-                response_text = "OpenAI API key not configured."
-                self.speak("I don't have an OpenAI API key configured. Please add one in the admin portal.")
+                response_text = "No LLM configured."
+                self.speak("I don't have an LLM configured. Please set one up in the admin portal.")
         
         # Record query to history with token usage if available
         duration_ms = int((time.time() - start_time) * 1000)
