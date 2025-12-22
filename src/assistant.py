@@ -44,6 +44,14 @@ class VoiceAssistant:
         self.audio_sample_rate = int(os.getenv('AUDIO_SAMPLE_RATE') or settings.get('audio_sample_rate') or 16000)
         self.audio_channels = int(os.getenv('AUDIO_CHANNELS') or settings.get('audio_channels') or 1)
         self.audio_record_seconds = float(os.getenv('AUDIO_RECORD_SECONDS') or settings.get('audio_record_seconds') or 4)
+        
+        # Audio device: use setting, env var, or auto-detect USB device
+        audio_device_setting = os.getenv('AUDIO_DEVICE') or settings.get('audio_device')
+        if audio_device_setting:
+            self.audio_device = int(audio_device_setting) if audio_device_setting.isdigit() else audio_device_setting
+        else:
+            # Auto-detect: look for USB audio device (like Jabra)
+            self.audio_device = self._find_usb_audio_device()
 
         self._whisper_model = None
         if self.whisper_mode == 'local':
@@ -56,8 +64,24 @@ class VoiceAssistant:
                 compute_type='int8',
             )
         
+        print(f"Using audio device: {self.audio_device}")
+        
         # Greeting message
         self.speak("Hello! I'm your Jetson Voice Assistant. How can I help you today?")
+    
+    def _find_usb_audio_device(self):
+        """Auto-detect USB audio device (Jabra, etc.)"""
+        try:
+            devices = sd.query_devices()
+            for i, dev in enumerate(devices):
+                name = dev.get('name', '').lower()
+                # Look for USB audio devices
+                if 'usb' in name and dev.get('max_input_channels', 0) > 0:
+                    print(f"Auto-detected USB audio device: {dev['name']} (device {i})")
+                    return i
+        except Exception as e:
+            print(f"Error detecting audio device: {e}")
+        return None  # Use system default
     
     def speak(self, text):
         """Convert text to speech"""
@@ -66,7 +90,7 @@ class VoiceAssistant:
         self.engine.runAndWait()
 
     def _record_audio(self):
-        """Record audio from the default microphone and return float32 mono samples."""
+        """Record audio from the configured microphone and return float32 mono samples."""
         duration = self.audio_record_seconds
         samplerate = self.audio_sample_rate
         channels = self.audio_channels
@@ -77,6 +101,7 @@ class VoiceAssistant:
             samplerate=samplerate,
             channels=channels,
             dtype='float32',
+            device=self.audio_device,
         )
         sd.wait()
 
