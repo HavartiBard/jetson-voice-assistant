@@ -15,6 +15,8 @@ import soundfile as sf
 from faster_whisper import WhisperModel
 
 from settings_store import load_settings
+from history_store import record_query
+import time
 
 class VoiceAssistant:
     def __init__(self):
@@ -158,36 +160,51 @@ class VoiceAssistant:
     def process_command(self, command):
         """Process user commands"""
         if not command:
-            return
+            return True
+        
+        start_time = time.time()
+        response_text = ""
             
         if "hello" in command or "hi" in command:
-            self.speak("Hello! How can I assist you today?")
+            response_text = "Hello! How can I assist you today?"
+            self.speak(response_text)
             
         elif "time" in command:
-            self.get_time()
+            current_time = datetime.datetime.now().strftime("%I:%M %p")
+            response_text = f"The current time is {current_time}"
+            self.speak(response_text)
             
         elif "date" in command:
-            self.get_date()
+            current_date = datetime.datetime.now().strftime("%A, %B %d, %Y")
+            response_text = f"Today is {current_date}"
+            self.speak(response_text)
             
         elif "joke" in command:
-            self.tell_joke()
+            response_text = pyjokes.get_joke()
+            self.speak(response_text)
             
         elif "search" in command:
             query = command.replace("search", "").strip()
             if query:
                 self.search_web(query)
+                response_text = f"Searching for: {query}"
             else:
                 self.speak("What would you like me to search for?")
                 query = self.listen()
                 if query:
                     self.search_web(query)
+                    response_text = f"Searching for: {query}"
         
         elif "thank" in command or "thanks" in command:
             responses = ["You're welcome!", "Happy to help!", "Anytime!", "My pleasure!"]
-            self.speak(random.choice(responses))
+            response_text = random.choice(responses)
+            self.speak(response_text)
             
         elif "goodbye" in command or "bye" in command or "exit" in command:
-            self.speak("Goodbye! Have a great day!")
+            response_text = "Goodbye! Have a great day!"
+            self.speak(response_text)
+            duration_ms = int((time.time() - start_time) * 1000)
+            record_query(command, response_text, duration_ms)
             return False
             
         else:
@@ -200,11 +217,16 @@ class VoiceAssistant:
                         {"role": "user", "content": command}
                     ]
                 )
-                reply = response.choices[0].message['content']
-                self.speak(reply)
+                response_text = response.choices[0].message['content']
+                self.speak(response_text)
             except Exception as e:
                 print(f"Error with OpenAI API: {e}")
+                response_text = "I'm not sure how to respond to that."
                 self.speak("I'm not sure how to respond to that. Could you try something else?")
+        
+        # Record query to history
+        duration_ms = int((time.time() - start_time) * 1000)
+        record_query(command, response_text, duration_ms)
         
         return True
 
