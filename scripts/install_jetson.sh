@@ -25,17 +25,17 @@ fi
 # Install systemd services
 sudo mkdir -p /etc/systemd/system
 
-sudo sed \
+sed \
   -e "s#__JETSON_USER__#${JETSON_USER}#g" \
   -e "s#__APP_DIR__#${APP_DIR}#g" \
   "${APP_DIR}/deploy/voice-assistant.service.template" \
-  > /etc/systemd/system/voice-assistant.service
+  | sudo tee /etc/systemd/system/voice-assistant.service > /dev/null
 
-sudo sed \
+sed \
   -e "s#__JETSON_USER__#${JETSON_USER}#g" \
   -e "s#__APP_DIR__#${APP_DIR}#g" \
   "${APP_DIR}/deploy/voice-assistant-portal.service.template" \
-  > /etc/systemd/system/voice-assistant-portal.service
+  | sudo tee /etc/systemd/system/voice-assistant-portal.service > /dev/null
 
 sudo systemctl daemon-reload
 sudo systemctl enable voice-assistant.service voice-assistant-portal.service
