@@ -11,6 +11,13 @@ __pycache__/
 # Logs
 *.log
 
+# Runtime data (created by app)
+config/history.json
+config/.reload_signal
+
+# Models (downloaded at runtime)
+models/
+
 # OS
 .DS_Store
 Thumbs.db
