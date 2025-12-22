@@ -17,11 +17,11 @@ A customizable voice assistant designed specifically for the NVIDIA Jetson Nano/
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Jetson Device                            │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐    ┌─────────────────────────────────────┐ │
-│  │  voice-assistant │    │      voice-assistant-portal        │ │
+┌──────────────────────────────────────────────────────────────────┐
+│                         Jetson Device                            │
+├──────────────────────────────────────────────────────────────────┤
+│  ┌──────────────────┐    ┌─────────────────────────────────────┐ │
+│  │  voice-assistant │    │      voice-assistant-portal         │ │
 │  │    (systemd)     │    │          (systemd)                  │ │
 │  │                  │    │                                     │ │
 │  │ • Wake word      │    │ • Settings UI (:8080/settings)      │ │
@@ -36,7 +36,7 @@ A customizable voice assistant designed specifically for the NVIDIA Jetson Nano/
 │  │ • settings.json  │    │ • OpenAI API                        │ │
 │  │ • history.json   │    │ • Ollama (local or remote)          │ │
 │  └──────────────────┘    └─────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ## Prerequisites
@@ -44,7 +44,7 @@ A customizable voice assistant designed specifically for the NVIDIA Jetson Nano/
 - NVIDIA Jetson Nano/Orin with JetPack (or any Linux system)
 - Python 3.10+
 - USB microphone/speaker (e.g., Jabra SPEAK 510) or ALSA-compatible audio
-- Internet connection for cloud features (Google TTS, OpenAI), or run fully offline with Ollama + eSpeak
+- Internet connection for cloud features (Google TTS, OpenAI)
 - **Optional**: OpenAI API key for cloud LLM and Whisper API
 - **Optional**: Ollama for local LLM inference
 
@@ -56,16 +56,16 @@ A customizable voice assistant designed specifically for the NVIDIA Jetson Nano/
    cd jetson-voice-assistant
    ```
 
-2. **Create and activate a virtual environment (recommended)**
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-3. **Install system dependencies**
+2. **Install system dependencies**
    ```bash
    sudo apt-get update
    sudo apt-get install -y python3-venv portaudio19-dev espeak ffmpeg alsa-utils
+   ```
+
+3. **Create and activate a virtual environment**
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
    ```
 
 4. **Install Python dependencies**
