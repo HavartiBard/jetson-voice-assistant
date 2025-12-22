@@ -1,0 +1,9 @@
+{
+  "wake_word": "jetson",
+  "whisper_mode": "local",
+  "whisper_model_size": "small",
+  "whisper_language": "en",
+  "audio_sample_rate": 16000,
+  "audio_channels": 1,
+  "audio_record_seconds": 4
+}
