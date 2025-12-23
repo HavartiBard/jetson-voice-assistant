@@ -81,6 +81,10 @@ A customizable voice assistant designed specifically for the NVIDIA Jetson Nano/
    
    OpenAI API key is optional - set it in the admin portal or `.env` for GPT features.
 
+   Optional: to enable Porcupine wake word detection (recommended), set `PICOVOICE_ACCESS_KEY` in `.env`.
+   The wake word is taken from the admin portal `wake_word` setting and mapped to a built-in Porcupine keyword.
+   Supported keywords: `computer`, `jarvis`, `bumblebee`, `picovoice`, `alexa`, `hey google`.
+
 ## Usage
 
 Run the assistant:
@@ -197,6 +201,11 @@ Settings are loaded with this priority (highest first):
 | `tts_provider` | `gtts` | TTS engine: `gtts`, `espeak`, or `pyttsx3` |
 | `tts_language` | `en` | Language code for text-to-speech |
 | `tts_speed` | `150` | Speech rate for espeak/pyttsx3 (words per minute) |
+
+Wake word detection:
+
+- If `PICOVOICE_ACCESS_KEY` is set in `.env`, the assistant uses Porcupine keyword spotting for wake word detection.
+- Otherwise, it falls back to Whisper-based wake word detection.
 
 ## Customization
 

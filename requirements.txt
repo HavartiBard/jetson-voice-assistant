@@ -12,3 +12,4 @@ faster-whisper>=0.10.0
 flask>=2.2.5
 psutil>=5.9.8
 gTTS>=2.5.0
+pvporcupine>=2.2.0

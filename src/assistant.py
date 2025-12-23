@@ -27,6 +27,11 @@ import time
 import threading
 from collections import deque
 
+try:
+    import pvporcupine
+except Exception:
+    pvporcupine = None
+
 
 class PersistentAudioStream:
     """Keeps arecord running continuously to prevent Jabra mute reset on device open."""
@@ -140,6 +145,44 @@ class PersistentAudioStream:
             result += b'\x00' * (bytes_needed - len(result))
         
         return result[:bytes_needed]
+
+    def read_bytes(self, bytes_needed: int, timeout_seconds: float = 2.0) -> bytes:
+        """Read an exact number of bytes from the buffer.
+
+        Args:
+            bytes_needed: Number of raw PCM bytes to return
+            timeout_seconds: How long to wait for enough buffered data
+
+        Returns:
+            Raw PCM bytes of length bytes_needed (padded with zeros on timeout)
+        """
+        start = time.time()
+
+        while time.time() - start < timeout_seconds:
+            with self._buffer_lock:
+                total_buffered = sum(len(chunk) for chunk in self._buffer)
+                if total_buffered >= bytes_needed:
+                    result = b''
+                    while len(result) < bytes_needed and self._buffer:
+                        chunk = self._buffer.popleft()
+                        result += chunk
+
+                    if len(result) > bytes_needed:
+                        excess = result[bytes_needed:]
+                        result = result[:bytes_needed]
+                        self._buffer.appendleft(excess)
+
+                    return result
+
+            time.sleep(0.01)
+
+        with self._buffer_lock:
+            result = b''.join(self._buffer)
+            self._buffer.clear()
+
+        if len(result) < bytes_needed:
+            result += b'\x00' * (bytes_needed - len(result))
+        return result[:bytes_needed]
     
     def stop(self):
         """Stop the audio stream."""
@@ -200,6 +243,42 @@ class VoiceAssistant:
         
         # Greeting message
         self.speak("Hello! I'm your Jetson Voice Assistant. How can I help you today?")
+
+        # Optional Porcupine wake word engine (preferred over Whisper-based wake word)
+        self._porcupine = None
+        self._porcupine_frame_bytes = None
+        self._init_porcupine()
+
+    def _init_porcupine(self):
+        """Initialize Porcupine if PICOVOICE_ACCESS_KEY is present."""
+        try:
+            access_key = (os.getenv('PICOVOICE_ACCESS_KEY') or '').strip()
+            if not access_key:
+                return
+            if pvporcupine is None:
+                print("PICOVOICE_ACCESS_KEY set but pvporcupine is not installed; falling back to Whisper wake word.", flush=True)
+                return
+
+            # Map the configured wake word to a Porcupine built-in keyword.
+            # If the wake word isn't supported, default to 'computer'.
+            kw = (self.wake_word or 'computer').strip().lower()
+            supported = {
+                'computer': 'computer',
+                'jarvis': 'jarvis',
+                'bumblebee': 'bumblebee',
+                'picovoice': 'picovoice',
+                'alexa': 'alexa',
+                'hey google': 'hey google',
+            }
+            porcupine_kw = supported.get(kw, 'computer')
+
+            self._porcupine = pvporcupine.create(access_key=access_key, keywords=[porcupine_kw])
+            self._porcupine_frame_bytes = int(self._porcupine.frame_length) * 2  # int16
+            print(f"Porcupine enabled (keyword='{porcupine_kw}', frame_length={self._porcupine.frame_length})", flush=True)
+        except Exception as e:
+            self._porcupine = None
+            self._porcupine_frame_bytes = None
+            print(f"Porcupine init error; falling back to Whisper wake word: {e}", flush=True)
 
     def _stop_audio_stream_for_playback(self):
         """Stop capture stream to avoid blocking playback on some USB devices."""
@@ -532,6 +611,34 @@ class VoiceAssistant:
         If muted (silent audio), returns (False, None) and updates mute state
         """
         try:
+            # Preferred: Porcupine keyword spotting (does not rely on Whisper transcription)
+            if self._porcupine is not None and self._porcupine_frame_bytes:
+                frame_bytes = self._audio_stream.read_bytes(self._porcupine_frame_bytes, timeout_seconds=2.0)
+
+                now = time.time()
+                if now - self._last_noise_log_ts >= 2.0:
+                    amp = get_audio_amplitude(frame_bytes)
+                    print(f"Audio amplitude max={amp}", flush=True)
+                    self._last_noise_log_ts = now
+
+                # Update mute status for portal, and skip processing if muted
+                if self.check_and_update_mute_status(frame_bytes):
+                    return False, None
+
+                pcm = np.frombuffer(frame_bytes, dtype=np.int16)
+                if len(pcm) != self._porcupine.frame_length:
+                    if len(pcm) < self._porcupine.frame_length:
+                        pcm = np.pad(pcm, (0, self._porcupine.frame_length - len(pcm)), mode='constant')
+                    else:
+                        pcm = pcm[: self._porcupine.frame_length]
+
+                keyword_index = self._porcupine.process(pcm.tolist())
+                if keyword_index >= 0:
+                    print("Wake word detected (Porcupine)", flush=True)
+                    return True, None
+
+                return False, None
+
             audio_samples, raw_bytes = self._record_audio()
 
             now = time.time()
