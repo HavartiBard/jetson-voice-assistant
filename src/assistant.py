@@ -225,15 +225,22 @@ class VoiceAssistant:
         # Capture at the same rate Whisper expects to avoid resampling artifacts.
         # Playback is handled by temporarily stopping capture during TTS.
         self._capture_sample_rate = self.audio_sample_rate
+
+        # Some USB speakerphones expose capture only as stereo (channels=2).
+        # Probe the device to pick a supported channel count.
+        self._audio_stream_channels = self._probe_capture_channels(
+            self.audio_device,
+            self._capture_sample_rate,
+            preferred=self.audio_channels,
+        )
         
         # Initialize persistent audio stream (keeps device open to prevent Jabra mute reset)
         self._audio_stream = PersistentAudioStream(
             self.audio_device,
             sample_rate=self._capture_sample_rate,
-            channels=1  # Jabra only supports mono
+            channels=self._audio_stream_channels
         )
         self._audio_stream_device = self.audio_device
-        self._audio_stream_channels = 1
         
         # Hardware mute state tracking with hysteresis
         self._last_mute_state = False
@@ -248,6 +255,48 @@ class VoiceAssistant:
         self._porcupine = None
         self._porcupine_frame_bytes = None
         self._init_porcupine()
+
+    def _probe_capture_channels(self, device: str, sample_rate: int, preferred: int = 1) -> int:
+        """Pick a capture channel count supported by the ALSA device.
+
+        Many USB conference speakerphones reject mono on the raw hw interface.
+        We test a short arecord to choose 1 or 2 channels.
+        """
+        candidates = []
+        if preferred in (1, 2):
+            candidates.append(preferred)
+        for c in (1, 2):
+            if c not in candidates:
+                candidates.append(c)
+
+        for channels in candidates:
+            try:
+                result = subprocess.run(
+                    [
+                        'arecord',
+                        '-D', device,
+                        '-f', 'S16_LE',
+                        '-c', str(channels),
+                        '-r', str(sample_rate),
+                        '-d', '1',
+                        '-t', 'raw',
+                        '-q',
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+
+                stderr = (result.stderr or '')
+                if result.returncode == 0 and 'Channels count non available' not in stderr:
+                    if channels != preferred:
+                        print(f"Audio capture channel fallback: {preferred} -> {channels}", flush=True)
+                    return channels
+            except Exception:
+                continue
+
+        print(f"Audio capture channel probe failed; defaulting to {preferred}", flush=True)
+        return preferred
 
     def _init_porcupine(self):
         """Initialize Porcupine if PICOVOICE_ACCESS_KEY is present."""
@@ -541,6 +590,11 @@ class VoiceAssistant:
             
             # Convert raw PCM bytes to float32 numpy array
             audio_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
+            if self._audio_stream_channels and self._audio_stream_channels > 1:
+                frames = len(audio_int16) // self._audio_stream_channels
+                if frames > 0:
+                    audio_int16 = audio_int16[: frames * self._audio_stream_channels]
+                    audio_int16 = audio_int16.reshape(frames, self._audio_stream_channels).mean(axis=1).astype(np.int16)
             audio = audio_int16.astype(np.float32) / 32768.0
 
             # Resample if capture stream rate differs from whisper/sample rate.
