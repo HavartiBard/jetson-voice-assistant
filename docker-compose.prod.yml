@@ -38,7 +38,6 @@ services:
     volumes:
       - ./config:/app/config
       - ./models:/app/models
-      - /proc/asound:/proc/asound:ro
     
     networks:
       - voice-net
