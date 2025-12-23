@@ -627,6 +627,13 @@ def _is_internal_audio_device_name(name: str) -> bool:
     return any(x in n for x in needles)
 
 
+def _filter_audio_devices(devices: list, show_all: bool = False) -> list:
+    """Filter audio devices, hiding internal Jetson devices unless show_all is True."""
+    if show_all:
+        return devices
+    return [d for d in devices if not _is_internal_audio_device_name(d.get("name", ""))]
+
+
 @app.get("/dashboard")
 def dashboard():
     """Main dashboard with service status and analytics."""
@@ -1329,6 +1336,12 @@ def settings():
           </select>
         </div>
       </div>
+      <div style="margin-top: 8px;">
+        <label style="display: flex; align-items: center; gap: 8px; font-weight: normal; cursor: pointer;">
+          <input type="checkbox" name="show_all_devices" value="1" {% if show_all_devices %}checked{% endif %} onchange="this.form.submit()" />
+          Show all devices (including internal Jetson audio)
+        </label>
+      </div>
     </div>
 
     <div class="form-group">
@@ -1367,9 +1380,10 @@ function esc2(s) {
 </script>
 """,
         s=s,
-        input_devices=get_audio_input_devices(),
-        output_devices=get_audio_output_devices(),
+        input_devices=_filter_audio_devices(get_audio_input_devices(), s.get('show_all_devices', False)),
+        output_devices=_filter_audio_devices(get_audio_output_devices(), s.get('show_all_devices', False)),
         tts_providers=TTS_PROVIDERS,
+        show_all_devices=s.get('show_all_devices', False),
     )
 
     return render_template_string(BASE_TEMPLATE, title="Settings | Jetson Assistant", body=body, flash=request.args.get("ok"), active_page="settings")
@@ -1409,6 +1423,8 @@ def save_settings_route():
         "tts_provider": (request.form.get("tts_provider") or current.get("tts_provider", "gtts")).strip(),
         "tts_language": (request.form.get("tts_language") or current.get("tts_language", "en")).strip(),
         "tts_speed": _to_int(request.form.get("tts_speed"), current.get("tts_speed", 150)),
+        # Debug/advanced settings
+        "show_all_devices": request.form.get("show_all_devices") == "1",
     }
 
     save_settings(new_settings)
