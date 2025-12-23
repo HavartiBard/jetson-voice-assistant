@@ -18,6 +18,7 @@ from faster_whisper import WhisperModel
 from settings_store import load_settings
 from history_store import record_query
 from ollama_client import OllamaClient
+from hardware_profiles import get_hardware_profile
 from audio_devices import (
     check_audio_has_speech,
     get_audio_amplitude,
@@ -28,9 +29,11 @@ import threading
 from collections import deque
 
 try:
-    import pvporcupine
+    import openwakeword
+    from openwakeword.model import Model as OwwModel
 except Exception:
-    pvporcupine = None
+    openwakeword = None
+    OwwModel = None
 
 
 class PersistentAudioStream:
@@ -222,25 +225,34 @@ class VoiceAssistant:
         
         print(f"Using audio device: {self.audio_device}", flush=True)
 
+        # Apply device-specific quirks/capabilities
+        self._hardware_profile = get_hardware_profile(self.audio_device)
+        print(f"Audio hardware profile: {self._hardware_profile.name}", flush=True)
+
+        self._capture_device = self._hardware_profile.preferred_capture_device or self.audio_device
+        if self._capture_device != self.audio_device:
+            print(f"Audio capture device override: {self.audio_device} -> {self._capture_device}", flush=True)
+
         # Capture at the same rate Whisper expects to avoid resampling artifacts.
         # Playback is handled by temporarily stopping capture during TTS.
         self._capture_sample_rate = self.audio_sample_rate
 
         # Some USB speakerphones expose capture only as stereo (channels=2).
         # Probe the device to pick a supported channel count.
+        preferred_channels = self._hardware_profile.prefer_capture_channels or self.audio_channels
         self._audio_stream_channels = self._probe_capture_channels(
-            self.audio_device,
+            self._capture_device,
             self._capture_sample_rate,
-            preferred=self.audio_channels,
+            preferred=preferred_channels,
         )
         
         # Initialize persistent audio stream (keeps device open to prevent Jabra mute reset)
         self._audio_stream = PersistentAudioStream(
-            self.audio_device,
+            self._capture_device,
             sample_rate=self._capture_sample_rate,
             channels=self._audio_stream_channels
         )
-        self._audio_stream_device = self.audio_device
+        self._audio_stream_device = self._capture_device
         
         # Hardware mute state tracking with hysteresis
         self._last_mute_state = False
@@ -248,13 +260,13 @@ class VoiceAssistant:
         self._mute_counter = 0  # Counter for hysteresis
         self._last_noise_log_ts = 0.0
         
+        # Initialize openWakeWord for fast wake word detection
+        self._oww_model = None
+        self._oww_frame_size = 1280  # 80ms at 16kHz (openWakeWord default)
+        self._init_openwakeword()
+        
         # Greeting message
         self.speak("Hello! I'm your Jetson Voice Assistant. How can I help you today?")
-
-        # Optional Porcupine wake word engine (preferred over Whisper-based wake word)
-        self._porcupine = None
-        self._porcupine_frame_bytes = None
-        self._init_porcupine()
 
     def _probe_capture_channels(self, device: str, sample_rate: int, preferred: int = 1) -> int:
         """Pick a capture channel count supported by the ALSA device.
@@ -298,36 +310,37 @@ class VoiceAssistant:
         print(f"Audio capture channel probe failed; defaulting to {preferred}", flush=True)
         return preferred
 
-    def _init_porcupine(self):
-        """Initialize Porcupine if PICOVOICE_ACCESS_KEY is present."""
+    def _init_openwakeword(self):
+        """Initialize openWakeWord for fast wake word detection."""
+        if OwwModel is None:
+            print("openWakeWord not available; using Whisper-based wake word detection.", flush=True)
+            return
+        
         try:
-            access_key = (os.getenv('PICOVOICE_ACCESS_KEY') or '').strip()
-            if not access_key:
-                return
-            if pvporcupine is None:
-                print("PICOVOICE_ACCESS_KEY set but pvporcupine is not installed; falling back to Whisper wake word.", flush=True)
-                return
-
-            # Map the configured wake word to a Porcupine built-in keyword.
-            # If the wake word isn't supported, default to 'computer'.
-            kw = (self.wake_word or 'computer').strip().lower()
-            supported = {
-                'computer': 'computer',
-                'jarvis': 'jarvis',
-                'bumblebee': 'bumblebee',
-                'picovoice': 'picovoice',
+            # Download models if not present
+            openwakeword.utils.download_models()
+            
+            # Map wake word to available openWakeWord models
+            # Available: alexa, hey_jarvis, hey_mycroft, hey_rhasspy, etc.
+            kw = (self.wake_word or 'hey jarvis').strip().lower()
+            model_map = {
                 'alexa': 'alexa',
-                'hey google': 'hey google',
+                'jarvis': 'hey_jarvis',
+                'hey jarvis': 'hey_jarvis',
+                'mycroft': 'hey_mycroft',
+                'hey mycroft': 'hey_mycroft',
+                'computer': 'hey_mycroft',  # Fallback
             }
-            porcupine_kw = supported.get(kw, 'computer')
-
-            self._porcupine = pvporcupine.create(access_key=access_key, keywords=[porcupine_kw])
-            self._porcupine_frame_bytes = int(self._porcupine.frame_length) * 2  # int16
-            print(f"Porcupine enabled (keyword='{porcupine_kw}', frame_length={self._porcupine.frame_length})", flush=True)
+            model_name = model_map.get(kw, 'hey_jarvis')
+            
+            self._oww_model = OwwModel(
+                wakeword_models=[model_name],
+                inference_framework='onnx',
+            )
+            print(f"openWakeWord enabled (model='{model_name}')", flush=True)
         except Exception as e:
-            self._porcupine = None
-            self._porcupine_frame_bytes = None
-            print(f"Porcupine init error; falling back to Whisper wake word: {e}", flush=True)
+            self._oww_model = None
+            print(f"openWakeWord init error; using Whisper fallback: {e}", flush=True)
 
     def _stop_audio_stream_for_playback(self):
         """Stop capture stream to avoid blocking playback on some USB devices."""
@@ -427,7 +440,10 @@ class VoiceAssistant:
     def check_and_update_mute_status(self, audio_data: bytes) -> bool:
         """Check if microphone is hardware muted and update state.
 
-        For Jabra, hardware mute produces literal zero audio samples.
+        For devices that support it (e.g., Jabra SPEAK), hardware mute produces
+        literal zero audio samples. We only apply that rule when the active
+        hardware profile requests it.
+
         Uses a small hysteresis: 2 consecutive zero-amplitude windows to mute,
         and 1 non-zero window to unmute.
 
@@ -437,9 +453,16 @@ class VoiceAssistant:
         Returns:
             bool: True if microphone is currently muted
         """
-        amp = get_audio_amplitude(audio_data)
+        # Default: do not infer "hardware mute" from audio for unknown devices.
+        if getattr(self, '_hardware_profile', None) is None or getattr(self._hardware_profile, 'mute_detection', 'none') != 'amplitude_zero':
+            write_mute_state(False)
+            self._last_mute_state = False
+            self._mute_counter = 0
+            return False
 
-        # Jabra mute produces literal zeros. Use a small hysteresis:
+        # Detect hardware mute by checking if max sample amplitude is exactly zero.
+        amp = get_audio_amplitude(audio_data)
+        # Use a small hysteresis:
         # - Mute: 2 consecutive zero-amplitude windows
         # - Unmute: 1 non-zero window
         if amp == 0:
@@ -651,6 +674,12 @@ class VoiceAssistant:
     
     def _transcribe(self, audio_samples):
         """Transcribe audio samples to text."""
+        # Skip transcription if audio is too quiet (prevents Whisper hallucinations)
+        if len(audio_samples) > 0:
+            peak = float(np.max(np.abs(audio_samples)))
+            if peak < 0.02:  # Essentially silent even after gain
+                return ""
+        
         if self.whisper_mode == 'api':
             return self._transcribe_api(audio_samples)
         else:
@@ -665,34 +694,51 @@ class VoiceAssistant:
         If muted (silent audio), returns (False, None) and updates mute state
         """
         try:
-            # Preferred: Porcupine keyword spotting (does not rely on Whisper transcription)
-            if self._porcupine is not None and self._porcupine_frame_bytes:
-                frame_bytes = self._audio_stream.read_bytes(self._porcupine_frame_bytes, timeout_seconds=2.0)
-
+            # Preferred: openWakeWord for fast, low-latency detection
+            if self._oww_model is not None:
+                # Account for stereo: read enough bytes for channels, then downmix to mono
+                bytes_per_frame = self._oww_frame_size * 2 * self._audio_stream_channels
+                frame_bytes = self._audio_stream.read_bytes(bytes_per_frame, timeout_seconds=2.0)
+                
                 now = time.time()
                 if now - self._last_noise_log_ts >= 2.0:
                     amp = get_audio_amplitude(frame_bytes)
                     print(f"Audio amplitude max={amp}", flush=True)
                     self._last_noise_log_ts = now
-
-                # Update mute status for portal, and skip processing if muted
+                
+                # Check mute status
                 if self.check_and_update_mute_status(frame_bytes):
                     return False, None
-
+                
+                # Convert to int16 numpy array
                 pcm = np.frombuffer(frame_bytes, dtype=np.int16)
-                if len(pcm) != self._porcupine.frame_length:
-                    if len(pcm) < self._porcupine.frame_length:
-                        pcm = np.pad(pcm, (0, self._porcupine.frame_length - len(pcm)), mode='constant')
-                    else:
-                        pcm = pcm[: self._porcupine.frame_length]
-
-                keyword_index = self._porcupine.process(pcm.tolist())
-                if keyword_index >= 0:
-                    print("Wake word detected (Porcupine)", flush=True)
-                    return True, None
-
+                
+                # Downmix stereo to mono if needed (openWakeWord expects mono 16kHz)
+                if self._audio_stream_channels == 2:
+                    pcm = pcm.reshape(-1, 2).mean(axis=1).astype(np.int16)
+                
+                # openWakeWord expects chunks of 1280 samples (80ms at 16kHz)
+                prediction = self._oww_model.predict(pcm)
+                
+                # Check if any wake word exceeded threshold
+                for model_name, score in prediction.items():
+                    if score > 0.5:  # Threshold
+                        print(f"Wake word detected (openWakeWord: {model_name}, score={score:.3f})", flush=True)
+                        # Reset model state to prevent repeated detections
+                        self._oww_model.reset()
+                        
+                        # Record full audio to capture any trailing command
+                        audio_samples, raw_bytes = self._record_audio()
+                        text = self._transcribe(audio_samples)
+                        if text:
+                            trailing = text.lower().strip()
+                            print(f"Trailing command: {trailing}", flush=True)
+                            return True, trailing
+                        return True, None
+                
                 return False, None
-
+            
+            # Fallback: Whisper-based wake word detection
             audio_samples, raw_bytes = self._record_audio()
 
             now = time.time()
@@ -754,10 +800,15 @@ class VoiceAssistant:
             return False, None
     
     def listen_for_command(self):
-        """Listen for a command after wake word detected."""
+        """Listen for a command after wake word. Prompts with 'Yes?'."""
         try:
             self.speak("Yes?")
+            
             audio_samples, raw_bytes = self._record_audio()
+            
+            # Reset openWakeWord state to clear any audio from the prompt
+            if self._oww_model is not None:
+                self._oww_model.reset()
             
             # Update mute state for portal
             self.check_and_update_mute_status(raw_bytes)
@@ -774,6 +825,33 @@ class VoiceAssistant:
             print(f"Transcription error: {e}", flush=True)
             self.speak("Sorry, I had trouble understanding.")
             return ""
+    
+    def listen_for_followup(self, timeout_seconds=5.0):
+        """Listen for follow-up commands without prompting. Returns command or empty string."""
+        print("Listening for follow-up...", flush=True)
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout_seconds:
+            try:
+                audio_samples, raw_bytes = self._record_audio()
+                
+                # Reset openWakeWord state
+                if self._oww_model is not None:
+                    self._oww_model.reset()
+                
+                # Check mute status
+                if self.check_and_update_mute_status(raw_bytes):
+                    continue
+                
+                # Transcribe - let Whisper decide if there's speech
+                text = self._transcribe(audio_samples)
+                if text:
+                    print(f"Follow-up: {text}", flush=True)
+                    return text.lower()
+            except Exception as e:
+                print(f"Follow-up listen error: {e}", flush=True)
+        
+        return ""
     
     def listen(self):
         """Legacy listen method - records and transcribes."""
@@ -956,8 +1034,17 @@ def main():
             else:
                 command = assistant.listen_for_command()
             
+            # Process command if we got one
             if command:
                 running = assistant.process_command(command)
+                
+                # After responding, listen for follow-ups (5 second window, no prompt)
+                while running:
+                    followup = assistant.listen_for_followup(timeout_seconds=5.0)
+                    if not followup:
+                        break  # No follow-up, go back to wake word
+                    running = assistant.process_command(followup)
+            
             print(f"Waiting for wake word '{assistant.wake_word}'...", flush=True)
 
 if __name__ == "__main__":

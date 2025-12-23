@@ -61,7 +61,7 @@ fi
 log_ok "Python ${PYTHON_VERSION} detected"
 
 # Check for required files
-for file in requirements.txt .env.example deploy/voice-assistant.service.template deploy/voice-assistant-portal.service.template; do
+for file in requirements.txt .env.example deploy/voice-assistant.service.template deploy/voice-assistant-portal.service.template deploy/voice-assistant-volume-buttons.service.template; do
   if [[ ! -f "${APP_DIR}/${file}" ]]; then
     log_error "Missing required file: ${file}"
     exit 1
@@ -122,13 +122,19 @@ sed \
   "${APP_DIR}/deploy/voice-assistant-portal.service.template" \
   | sudo tee /etc/systemd/system/voice-assistant-portal.service > /dev/null
 
+sed \
+  -e "s#__JETSON_USER__#${JETSON_USER}#g" \
+  -e "s#__APP_DIR__#${APP_DIR}#g" \
+  "${APP_DIR}/deploy/voice-assistant-volume-buttons.service.template" \
+  | sudo tee /etc/systemd/system/voice-assistant-volume-buttons.service > /dev/null
+
 sudo systemctl daemon-reload
-sudo systemctl enable voice-assistant.service voice-assistant-portal.service > /dev/null 2>&1
+sudo systemctl enable voice-assistant.service voice-assistant-portal.service voice-assistant-volume-buttons.service > /dev/null 2>&1
 log_ok "Systemd services installed and enabled"
 
 # --- Start services ---
 log_info "Starting services..."
-sudo systemctl restart voice-assistant.service voice-assistant-portal.service
+sudo systemctl restart voice-assistant.service voice-assistant-portal.service voice-assistant-volume-buttons.service
 
 # Brief wait to check if services started
 sleep 2

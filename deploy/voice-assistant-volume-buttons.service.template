@@ -1,0 +1,16 @@
+[Unit]
+Description=Jetson Voice Assistant - Volume Buttons Listener
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=__APP_DIR__
+EnvironmentFile=__APP_DIR__/.env
+ExecStart=__APP_DIR__/venv/bin/python __APP_DIR__/src/volume_button_listener.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

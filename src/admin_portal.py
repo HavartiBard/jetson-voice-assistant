@@ -9,8 +9,9 @@ from datetime import datetime
 
 from settings_store import load_settings, save_settings, RECOMMENDED_OLLAMA_MODELS, OPENAI_MODELS, TTS_PROVIDERS
 from history_store import get_stats_history, get_query_history, record_stats, clear_query_history, get_query_analytics
-from audio_devices import get_audio_input_devices, get_audio_output_devices, get_mute_status
+from audio_devices import get_audio_input_devices, get_audio_output_devices, get_card_number_from_device, get_mute_status
 from ollama_client import OllamaClient, check_ollama_status
+from hardware_profiles import get_device_identity, get_hardware_profile
 
 # Reload signal file path
 RELOAD_SIGNAL_PATH = os.path.join(
@@ -378,6 +379,7 @@ BASE_TEMPLATE = """
       </div>
       <nav>
         <a href="{{ url_for('dashboard') }}" {% if active_page == 'dashboard' %}class="active"{% endif %}>Dashboard</a>
+        <a href="{{ url_for('devices') }}" {% if active_page == 'devices' %}class="active"{% endif %}>Devices</a>
         <a href="{{ url_for('settings') }}" {% if active_page == 'settings' %}class="active"{% endif %}>Settings</a>
         <a href="{{ url_for('llm_settings') }}" {% if active_page == 'llm' %}class="active"{% endif %}>LLM Models</a>
         <a href="{{ url_for('system_stats') }}" {% if active_page == 'stats' %}class="active"{% endif %}>System Stats</a>
@@ -501,6 +503,89 @@ def _get_jetson_stats() -> dict:
         pass
     
     return stats
+
+
+def _run_amixer(args: list[str], timeout: int = 3) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["amixer", *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def _amixer_card_args_from_device(device_id: str) -> tuple[bool, list[str] | None, str | None]:
+    card = get_card_number_from_device(device_id)
+    if not card:
+        return False, None, "No ALSA card could be determined for this device"
+    return True, ["-c", str(card)], None
+
+
+def _parse_amixer_percent(stdout: str) -> int | None:
+    import re
+
+    m = re.search(r"\[(\d+)%\]", stdout)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
+def _parse_amixer_switch(stdout: str) -> bool | None:
+    import re
+
+    m = re.search(r"\[(on|off)\]", stdout, flags=re.IGNORECASE)
+    if not m:
+        return None
+    return m.group(1).lower() == "on"
+
+
+def _list_mixer_controls(card: str, timeout: int = 3) -> list[str]:
+    try:
+        result = _run_amixer(["-c", card, "scontrols"], timeout=timeout)
+        if result.returncode != 0:
+            return []
+        names: list[str] = []
+        for line in (result.stdout or "").splitlines():
+            line = line.strip()
+            if not line.startswith("Simple mixer control"):
+                continue
+            # Simple mixer control 'Master',0
+            start = line.find("'")
+            end = line.rfind("'")
+            if start != -1 and end != -1 and end > start:
+                names.append(line[start + 1 : end])
+        return names
+    except Exception:
+        return []
+
+
+def _choose_reasonable_control(card: str, prefer: list[str]) -> str | None:
+    controls = _list_mixer_controls(card)
+    lowered = {c.lower(): c for c in controls}
+    for p in prefer:
+        if p.lower() in lowered:
+            return lowered[p.lower()]
+    return controls[0] if controls else None
+
+
+def _is_internal_audio_device_name(name: str) -> bool:
+    n = (name or "").lower()
+    # Heuristic: hide Jetson internal/board audio endpoints by default.
+    # Keep USB devices visible.
+    needles = [
+        "jetson",
+        "orin",
+        "nvidia",
+        "tegra",
+        "ape",
+        "hdmi",
+        "i2s",
+        "spdif",
+    ]
+    return any(x in n for x in needles)
 
 
 @app.get("/dashboard")
@@ -834,6 +919,278 @@ setInterval(updateMuteStatus, 2000);
     return render_template_string(BASE_TEMPLATE, title="Dashboard | Jetson Assistant", body=body, flash=None, active_page="dashboard")
 
 
+@app.get("/devices")
+def devices():
+    show_all = (request.args.get("show_all") or "").strip() in ("1", "true", "yes", "on")
+    body = render_template_string(
+        """
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Devices</h2>
+    <div style="display:flex; gap: 10px; align-items:center;">
+      <button type="button" class="btn btn-secondary" onclick="refreshDevices()">↻ Refresh</button>
+      <button type="button" class="btn btn-secondary" onclick="toggleShowAll()" id="show-all-btn">—</button>
+    </div>
+  </div>
+  <div class="hint">Shows detected audio devices and basic controls for the currently selected input/output devices.</div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Active Selection</h2>
+  </div>
+  <div class="form-row">
+    <div>
+      <label>Input Device (Settings)</label>
+      <div id="active-input" class="time-badge">Loading…</div>
+      <div id="active-input-profile" class="hint"></div>
+    </div>
+    <div>
+      <label>Output Device (Settings)</label>
+      <div id="active-output" class="time-badge">Loading…</div>
+      <div id="active-output-profile" class="hint"></div>
+    </div>
+    <div>
+      <label>Microphone Mute</label>
+      <div id="active-mute" class="time-badge">Loading…</div>
+      <div class="hint">Mute status is reported by the assistant.</div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Output Controls</h2>
+  </div>
+  <div class="form-row">
+    <div>
+      <label for="output-control">Mixer Control</label>
+      <select id="output-control"></select>
+      <div class="hint">If the default control doesn’t work, pick another.</div>
+    </div>
+    <div>
+      <label for="output-volume">Volume</label>
+      <input id="output-volume" type="range" min="0" max="100" value="10" oninput="onOutputVolumePreview()" onchange="setOutputVolume()" />
+      <div class="hint"><span id="output-volume-label">—</span></div>
+    </div>
+    <div>
+      <label>&nbsp;</label>
+      <button type="button" class="btn btn-secondary" onclick="toggleOutputMute()">Toggle Mute</button>
+      <div class="hint" id="output-mute-state">—</div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Input Controls</h2>
+  </div>
+  <div class="form-row">
+    <div>
+      <label for="input-control">Mixer Control</label>
+      <select id="input-control"></select>
+      <div class="hint">Look for controls like “Mic”, “Capture”, “Input”.</div>
+    </div>
+    <div>
+      <label for="input-gain">Sensitivity / Gain</label>
+      <input id="input-gain" type="range" min="0" max="100" value="50" oninput="onInputGainPreview()" onchange="setInputGain()" />
+      <div class="hint"><span id="input-gain-label">—</span></div>
+    </div>
+    <div>
+      <label>&nbsp;</label>
+      <button type="button" class="btn btn-secondary" onclick="refreshDevices()">Reload State</button>
+      <div class="hint">Changes apply immediately, but some devices may ignore mixer gain.</div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Detected ALSA Devices</h2>
+  </div>
+  <table class="query-table">
+    <thead>
+      <tr>
+        <th>Type</th>
+        <th>Name</th>
+        <th>Device ID</th>
+        <th>Card</th>
+      </tr>
+    </thead>
+    <tbody id="device-table">
+      <tr><td colspan="4" class="empty-state">Loading…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+const SHOW_ALL = {{ 'true' if show_all else 'false' }};
+
+function esc(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function toggleShowAll() {
+  const url = new URL(window.location.href);
+  if (SHOW_ALL) url.searchParams.delete('show_all');
+  else url.searchParams.set('show_all', '1');
+  window.location.href = url.toString();
+}
+
+function onOutputVolumePreview() {
+  const v = document.getElementById('output-volume').value;
+  document.getElementById('output-volume-label').textContent = v + '%';
+}
+function onInputGainPreview() {
+  const v = document.getElementById('input-gain').value;
+  document.getElementById('input-gain-label').textContent = v + '%';
+}
+
+async function setOutputVolume() {
+  const control = document.getElementById('output-control').value;
+  const volume = parseInt(document.getElementById('output-volume').value, 10);
+  try {
+    const resp = await fetch('/api/audio/output/volume', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({control, volume})
+    });
+    const data = await resp.json();
+    if (!data.success) alert(data.error || 'Failed to set volume');
+    await refreshMixerStates();
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function toggleOutputMute() {
+  const control = document.getElementById('output-control').value;
+  try {
+    const resp = await fetch('/api/audio/output/mute', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({control, action: 'toggle'})
+    });
+    const data = await resp.json();
+    if (!data.success) alert(data.error || 'Failed to toggle mute');
+    await refreshMixerStates();
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function setInputGain() {
+  const control = document.getElementById('input-control').value;
+  const gain = parseInt(document.getElementById('input-gain').value, 10);
+  try {
+    const resp = await fetch('/api/audio/input/gain', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({control, gain})
+    });
+    const data = await resp.json();
+    if (!data.success) alert(data.error || 'Failed to set gain');
+    await refreshMixerStates();
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function refreshMixerStates() {
+  try {
+    const resp = await fetch('/api/devices/state' + (SHOW_ALL ? '?show_all=1' : ''));
+    const data = await resp.json();
+    if (!data.success) throw new Error(data.error || 'Failed');
+
+    document.getElementById('active-input').textContent = data.active.input_device_name || data.active.input_device_id || '—';
+    document.getElementById('active-output').textContent = data.active.output_device_name || data.active.output_device_id || '—';
+    document.getElementById('active-mute').textContent = data.active.mute && data.active.mute.is_muted ? 'Muted' : 'Active';
+
+    document.getElementById('active-input-profile').textContent = data.active.input_profile_text || '';
+    document.getElementById('active-output-profile').textContent = data.active.output_profile_text || '';
+
+    const outVol = data.output && typeof data.output.volume_percent === 'number' ? data.output.volume_percent : null;
+    const outMute = data.output && typeof data.output.is_on === 'boolean' ? data.output.is_on : null;
+    if (outVol !== null) {
+      document.getElementById('output-volume').value = outVol;
+      document.getElementById('output-volume-label').textContent = outVol + '%';
+    }
+    document.getElementById('output-mute-state').textContent = outMute === null ? '—' : (outMute ? 'On' : 'Off');
+
+    const inGain = data.input && typeof data.input.gain_percent === 'number' ? data.input.gain_percent : null;
+    if (inGain !== null) {
+      document.getElementById('input-gain').value = inGain;
+      document.getElementById('input-gain-label').textContent = inGain + '%';
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function refreshDevices() {
+  const table = document.getElementById('device-table');
+  table.innerHTML = '<tr><td colspan="4" class="empty-state">Loading…</td></tr>';
+  try {
+    const resp = await fetch('/api/devices/state' + (SHOW_ALL ? '?show_all=1' : ''));
+    const data = await resp.json();
+    if (!data.success) throw new Error(data.error || 'Failed');
+
+    const outControls = data.output_controls || [];
+    const inControls = data.input_controls || [];
+
+    const outSel = document.getElementById('output-control');
+    outSel.innerHTML = '';
+    outControls.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c;
+      opt.textContent = c;
+      outSel.appendChild(opt);
+    });
+    if (data.output && data.output.control_name) outSel.value = data.output.control_name;
+
+    const inSel = document.getElementById('input-control');
+    inSel.innerHTML = '';
+    inControls.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c;
+      opt.textContent = c;
+      inSel.appendChild(opt);
+    });
+    if (data.input && data.input.control_name) inSel.value = data.input.control_name;
+
+    const rows = [];
+    (data.detected || []).forEach(d => {
+      rows.push('<tr>' +
+        '<td>' + esc(d.type) + '</td>' +
+        '<td><strong>' + esc(d.name) + '</strong></td>' +
+        '<td><span class="time-badge">' + esc(d.id) + '</span></td>' +
+        '<td>' + esc(d.card) + '</td>' +
+      '</tr>');
+    });
+    table.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="empty-state">No devices detected</td></tr>';
+    await refreshMixerStates();
+  } catch (e) {
+    table.innerHTML = '<tr><td colspan="4" class="empty-state">Error: ' + esc(e.message) + '</td></tr>';
+  }
+}
+
+refreshDevices();
+document.getElementById('show-all-btn').textContent = SHOW_ALL ? 'Hide Internal Devices' : 'Show Internal Devices';
+onOutputVolumePreview();
+onInputGainPreview();
+</script>
+"""
+    )
+    return render_template_string(
+        BASE_TEMPLATE,
+        title="Devices | Jetson Assistant",
+        body=body,
+        flash=request.args.get("ok"),
+        active_page="devices",
+        show_all=show_all,
+    )
+
+
 @app.get("/settings")
 def settings():
     s = load_settings()
@@ -963,6 +1320,12 @@ def settings():
     <button type="submit">💾 Save Settings</button>
   </form>
 </div>
+
+<script>
+function esc2(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+</script>
 """,
         s=s,
         input_devices=get_audio_input_devices(),
@@ -1618,6 +1981,187 @@ def api_mute_status():
     audio_input_device = settings.get('audio_input_device', 'default')
     mute_status = get_mute_status(audio_input_device)
     return jsonify(mute_status)
+
+
+@app.get("/api/devices/state")
+def api_devices_state():
+    show_all = (request.args.get("show_all") or "").strip() in ("1", "true", "yes", "on")
+    settings = load_settings()
+    input_device_id = settings.get("audio_input_device", "default")
+    output_device_id = settings.get("audio_output_device", "default")
+
+    detected = []
+    for d in get_audio_input_devices():
+        if not show_all and _is_internal_audio_device_name(d.get("name") or ""):
+            continue
+        detected.append({"type": "input", "id": d.get("id"), "name": d.get("name"), "card": d.get("card")})
+    for d in get_audio_output_devices():
+        if not show_all and _is_internal_audio_device_name(d.get("name") or ""):
+            continue
+        detected.append({"type": "output", "id": d.get("id"), "name": d.get("name"), "card": d.get("card")})
+
+    mute_status = get_mute_status(input_device_id)
+
+    active_input_identity = get_device_identity(input_device_id)
+    active_output_identity = get_device_identity(output_device_id)
+    input_profile = get_hardware_profile(input_device_id)
+    output_profile = get_hardware_profile(output_device_id)
+
+    input_card = get_card_number_from_device(input_device_id)
+    output_card = get_card_number_from_device(output_device_id)
+
+    input_controls = _list_mixer_controls(str(input_card), timeout=2) if input_card else []
+    output_controls = _list_mixer_controls(str(output_card), timeout=2) if output_card else []
+
+    chosen_output_control = _choose_reasonable_control(str(output_card), ["Anker PowerConf S330", "Master", "PCM", "Speaker"]) if output_card else None
+    chosen_input_control = _choose_reasonable_control(str(input_card), ["Mic", "Capture", "Input", "Headset"]) if input_card else None
+
+    output_state = {"control_name": chosen_output_control, "volume_percent": None, "is_on": None}
+    input_state = {"control_name": chosen_input_control, "gain_percent": None}
+
+    try:
+        if output_card and chosen_output_control:
+            r = _run_amixer(["-c", str(output_card), "sget", chosen_output_control], timeout=2)
+            if r.returncode == 0:
+                output_state["volume_percent"] = _parse_amixer_percent(r.stdout)
+                output_state["is_on"] = _parse_amixer_switch(r.stdout)
+    except Exception:
+        pass
+
+    try:
+        if input_card and chosen_input_control:
+            r = _run_amixer(["-c", str(input_card), "sget", chosen_input_control], timeout=2)
+            if r.returncode == 0:
+                input_state["gain_percent"] = _parse_amixer_percent(r.stdout)
+    except Exception:
+        pass
+
+    return jsonify(
+        {
+            "success": True,
+            "detected": detected,
+            "active": {
+                "input_device_id": input_device_id,
+                "output_device_id": output_device_id,
+                "input_device_name": next((d.get("name") for d in get_audio_input_devices() if d.get("id") == input_device_id), input_device_id),
+                "output_device_name": next((d.get("name") for d in get_audio_output_devices() if d.get("id") == output_device_id), output_device_id),
+                "mute": mute_status,
+                "input_identity": active_input_identity,
+                "output_identity": active_output_identity,
+                "input_profile": {"name": input_profile.name},
+                "output_profile": {"name": output_profile.name},
+                "input_profile_text": f"Profile: {input_profile.name} • ALSA: {active_input_identity.get('alsa_card_name') or '—'}",
+                "output_profile_text": f"Profile: {output_profile.name} • ALSA: {active_output_identity.get('alsa_card_name') or '—'}",
+            },
+            "input_controls": input_controls,
+            "output_controls": output_controls,
+            "input": input_state,
+            "output": output_state,
+        }
+    )
+
+
+@app.post("/api/audio/output/volume")
+def api_set_output_volume():
+    payload = request.get_json(silent=True) or {}
+    volume = payload.get("volume")
+    control = (payload.get("control") or "").strip()
+
+    settings = load_settings()
+    output_device_id = settings.get("audio_output_device", "default")
+    ok, card_args, err = _amixer_card_args_from_device(output_device_id)
+    if not ok or not card_args:
+        return jsonify({"success": False, "error": err or "No output ALSA card"})
+
+    try:
+        volume_int = int(volume)
+        if volume_int < 0 or volume_int > 100:
+            raise ValueError("Volume out of range")
+    except Exception:
+        return jsonify({"success": False, "error": "Invalid volume"})
+
+    if not control:
+        card = card_args[1]
+        control = _choose_reasonable_control(str(card), ["Master", "PCM", "Speaker"]) or ""
+
+    if not control:
+        return jsonify({"success": False, "error": "No mixer control available"})
+
+    try:
+        r = _run_amixer([*card_args, "sset", control, f"{volume_int}%"], timeout=3)
+        if r.returncode != 0:
+            return jsonify({"success": False, "error": (r.stderr or r.stdout or "amixer failed")[:200]})
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.post("/api/audio/output/mute")
+def api_output_mute():
+    payload = request.get_json(silent=True) or {}
+    action = (payload.get("action") or "toggle").strip().lower()
+    control = (payload.get("control") or "").strip()
+
+    settings = load_settings()
+    output_device_id = settings.get("audio_output_device", "default")
+    ok, card_args, err = _amixer_card_args_from_device(output_device_id)
+    if not ok or not card_args:
+        return jsonify({"success": False, "error": err or "No output ALSA card"})
+
+    if not control:
+        card = card_args[1]
+        control = _choose_reasonable_control(str(card), ["Master", "PCM", "Speaker"]) or ""
+
+    if not control:
+        return jsonify({"success": False, "error": "No mixer control available"})
+
+    try:
+        if action == "mute":
+            r = _run_amixer([*card_args, "sset", control, "mute"], timeout=3)
+        elif action == "unmute":
+            r = _run_amixer([*card_args, "sset", control, "unmute"], timeout=3)
+        else:
+            r = _run_amixer([*card_args, "sset", control, "toggle"], timeout=3)
+        if r.returncode != 0:
+            return jsonify({"success": False, "error": (r.stderr or r.stdout or "amixer failed")[:200]})
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.post("/api/audio/input/gain")
+def api_set_input_gain():
+    payload = request.get_json(silent=True) or {}
+    gain = payload.get("gain")
+    control = (payload.get("control") or "").strip()
+
+    settings = load_settings()
+    input_device_id = settings.get("audio_input_device", "default")
+    ok, card_args, err = _amixer_card_args_from_device(input_device_id)
+    if not ok or not card_args:
+        return jsonify({"success": False, "error": err or "No input ALSA card"})
+
+    try:
+        gain_int = int(gain)
+        if gain_int < 0 or gain_int > 100:
+            raise ValueError("Gain out of range")
+    except Exception:
+        return jsonify({"success": False, "error": "Invalid gain"})
+
+    if not control:
+        card = card_args[1]
+        control = _choose_reasonable_control(str(card), ["Mic", "Capture", "Input"]) or ""
+
+    if not control:
+        return jsonify({"success": False, "error": "No mixer control available"})
+
+    try:
+        r = _run_amixer([*card_args, "sset", control, f"{gain_int}%"], timeout=3)
+        if r.returncode != 0:
+            return jsonify({"success": False, "error": (r.stderr or r.stdout or "amixer failed")[:200]})
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
 
 
 @app.get("/api/dashboard")
