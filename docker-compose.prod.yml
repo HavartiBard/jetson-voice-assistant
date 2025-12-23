@@ -26,7 +26,6 @@ services:
       - /dev/snd:/dev/snd
     group_add:
       - audio
-    
     environment:
       - AUDIO_INPUT_DEVICE=${AUDIO_INPUT_DEVICE:-hw:0,0}
       - AUDIO_OUTPUT_DEVICE=${AUDIO_OUTPUT_DEVICE:-plughw:0,0}
@@ -39,6 +38,7 @@ services:
     volumes:
       - ./config:/app/config
       - ./models:/app/models
+      - /proc/asound:/proc/asound:ro
     
     networks:
       - voice-net

@@ -41,8 +41,7 @@ services:
     volumes:
       - ./config:/app/config
       - ./models:/app/models
-      # Optional: mount .env directly if not using env_file
-      # - ./.env:/app/.env:ro
+      - /proc/asound:/proc/asound:ro
     
     # Network for portal access
     networks:
