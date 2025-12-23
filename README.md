@@ -284,6 +284,7 @@ jetson-voice-assistant/
 ## Acknowledgments
 
 - [faster-whisper](https://github.com/guillaumekln/faster-whisper) - Local speech recognition
+- [Picovoice Porcupine](https://picovoice.ai/platform/porcupine/) - Wake word detection
 - [gTTS](https://github.com/pndurette/gTTS) - Google Text-to-Speech
 - [OpenAI](https://openai.com/) - GPT and Whisper API
 - [Ollama](https://ollama.com/) - Local LLM inference
