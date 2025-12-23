@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 #
-# Jetson Voice Assistant - Installation Script
+# Jetson Voice Assistant - Native Installation Script
 # Installs system dependencies, Python packages, and configures systemd services.
 #
-# Usage:
-#   ./install_jetson.sh                    # Native installation (systemd)
-#   ./install_jetson.sh --container        # Container installation (build locally)
-#   ./install_jetson.sh --container-pull   # Container installation (pull from ghcr.io)
+# For container deployment, use Portainer or docker-compose directly.
+# See: deploy/PORTAINER.md
 #
 set -euo pipefail
 
@@ -14,49 +12,6 @@ set -euo pipefail
 APP_DIR=${APP_DIR:-"$HOME/jetson-voice-assistant"}
 JETSON_USER=${JETSON_USER:-"$USER"}
 MIN_PYTHON_VERSION="3.10"
-USE_CONTAINER=false
-CONTAINER_PULL=false
-GHCR_IMAGE=${GHCR_IMAGE:-"ghcr.io/havartibard/jetson-voice-assistant"}
-IMAGE_TAG=${IMAGE_TAG:-"latest"}
-
-# Parse arguments
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    --container|-c)
-      USE_CONTAINER=true
-      shift
-      ;;
-    --container-pull|-p)
-      USE_CONTAINER=true
-      CONTAINER_PULL=true
-      shift
-      ;;
-    --image)
-      GHCR_IMAGE="$2"
-      shift 2
-      ;;
-    --tag)
-      IMAGE_TAG="$2"
-      shift 2
-      ;;
-    --help|-h)
-      echo "Usage: $0 [OPTIONS]"
-      echo ""
-      echo "Options:"
-      echo "  --container, -c       Build and run Docker containers locally"
-      echo "  --container-pull, -p  Pull pre-built containers from GitHub Registry"
-      echo "  --image IMAGE         Override container image (default: ${GHCR_IMAGE})"
-      echo "  --tag TAG             Override image tag (default: ${IMAGE_TAG})"
-      echo "  --help, -h            Show this help message"
-      exit 0
-      ;;
-    *)
-      echo "Unknown option: $1"
-      echo "Use --help for usage information"
-      exit 1
-      ;;
-  esac
-done
 
 # Colors for output
 RED='\033[0;31m'
@@ -72,25 +27,13 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 echo ""
 echo "=========================================="
-if [[ "${USE_CONTAINER}" == "true" ]]; then
-  echo "  Jetson Voice Assistant - Container Install"
-else
-  echo "  Jetson Voice Assistant - Native Install"
-fi
+echo "  Jetson Voice Assistant - Native Install"
 echo "=========================================="
 echo ""
 
 log_info "Configuration:"
 echo "  APP_DIR:     ${APP_DIR}"
 echo "  JETSON_USER: ${JETSON_USER}"
-if [[ "${CONTAINER_PULL}" == "true" ]]; then
-  echo "  MODE:        Container (pull from registry)"
-  echo "  IMAGE:       ${GHCR_IMAGE}:${IMAGE_TAG}"
-elif [[ "${USE_CONTAINER}" == "true" ]]; then
-  echo "  MODE:        Container (build locally)"
-else
-  echo "  MODE:        Native (systemd)"
-fi
 echo ""
 
 # --- Pre-flight checks ---
@@ -108,134 +51,6 @@ if [[ ! -d "${APP_DIR}" ]]; then
   exit 1
 fi
 log_ok "App directory found"
-
-# --- Container Installation Path ---
-if [[ "${USE_CONTAINER}" == "true" ]]; then
-  # Check for Docker
-  if ! command -v docker &> /dev/null; then
-    log_error "Docker not found. Install Docker first:"
-    echo "  curl -fsSL https://get.docker.com | sh"
-    echo "  sudo usermod -aG docker ${JETSON_USER}"
-    exit 1
-  fi
-  log_ok "Docker found"
-
-  # Check for docker-compose (v2 plugin or standalone)
-  if docker compose version &> /dev/null; then
-    COMPOSE_CMD="docker compose"
-  elif command -v docker-compose &> /dev/null; then
-    COMPOSE_CMD="docker-compose"
-  else
-    log_error "Docker Compose not found. Install it first."
-    exit 1
-  fi
-  log_ok "Docker Compose found (${COMPOSE_CMD})"
-
-  # Check for required container files
-  if [[ "${CONTAINER_PULL}" == "true" ]]; then
-    REQUIRED_FILES="docker-compose.prod.yml .env.example"
-  else
-    REQUIRED_FILES="Dockerfile docker-compose.yml requirements.txt .env.example"
-  fi
-  for file in ${REQUIRED_FILES}; do
-    if [[ ! -f "${APP_DIR}/${file}" ]]; then
-      log_error "Missing required file: ${file}"
-      exit 1
-    fi
-  done
-  log_ok "Required container files present"
-
-  # --- Create .env if needed ---
-  if [[ ! -f "${APP_DIR}/.env" ]]; then
-    cp "${APP_DIR}/.env.example" "${APP_DIR}/.env"
-    log_ok "Created .env from template"
-    log_warn "Edit ${APP_DIR}/.env to add your API keys (optional)"
-  else
-    log_ok ".env file already exists"
-  fi
-
-  # --- Ensure directories exist ---
-  mkdir -p "${APP_DIR}/config" "${APP_DIR}/models"
-  log_ok "Config and models directories ready"
-
-  # --- Detect audio device ---
-  log_info "Detecting audio devices..."
-  DETECTED_DEVICE=$(arecord -l 2>/dev/null | grep -m1 'USB\|card' | sed -n 's/card \([0-9]*\):.*/hw:\1,0/p' || echo "hw:0,0")
-  log_ok "Detected audio device: ${DETECTED_DEVICE}"
-
-  # Set audio device in environment if not already set
-  if ! grep -q "^AUDIO_INPUT_DEVICE=" "${APP_DIR}/.env" 2>/dev/null; then
-    echo "AUDIO_INPUT_DEVICE=${DETECTED_DEVICE}" >> "${APP_DIR}/.env"
-    echo "AUDIO_OUTPUT_DEVICE=${DETECTED_DEVICE/hw:/plughw:}" >> "${APP_DIR}/.env"
-    log_ok "Added audio device to .env"
-  fi
-
-  cd "${APP_DIR}"
-
-  # --- Build or Pull containers ---
-  if [[ "${CONTAINER_PULL}" == "true" ]]; then
-    log_info "Pulling containers from ${GHCR_IMAGE}:${IMAGE_TAG}..."
-    export GHCR_IMAGE IMAGE_TAG
-    ${COMPOSE_CMD} -f docker-compose.prod.yml pull
-    log_ok "Containers pulled"
-
-    # --- Start containers ---
-    log_info "Starting containers..."
-    ${COMPOSE_CMD} -f docker-compose.prod.yml up -d
-  else
-    log_info "Building Docker containers (this may take several minutes)..."
-    ${COMPOSE_CMD} build --quiet
-    log_ok "Containers built"
-
-    # --- Start containers ---
-    log_info "Starting containers..."
-    ${COMPOSE_CMD} up -d
-  fi
-
-  # Brief wait to check if containers started
-  sleep 3
-  if ${COMPOSE_CMD} ps | grep -q "voice-assistant.*Up"; then
-    log_ok "voice-assistant container running"
-  else
-    log_warn "voice-assistant container may have issues - check logs"
-  fi
-
-  if ${COMPOSE_CMD} ps | grep -q "voice-assistant-portal.*Up"; then
-    log_ok "voice-assistant-portal container running"
-  else
-    log_warn "voice-assistant-portal container may have issues - check logs"
-  fi
-
-  # --- Detect IP for portal URL ---
-  LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "<jetson-ip>")
-
-  echo ""
-  echo "=========================================="
-  echo "  Container Installation Complete!"
-  echo "=========================================="
-  echo ""
-  echo "  Admin Portal: http://${LOCAL_IP}:8080/settings"
-  echo ""
-  echo "  Useful commands:"
-  echo "    ${COMPOSE_CMD} logs -f assistant  # View assistant logs"
-  echo "    ${COMPOSE_CMD} logs -f portal     # View portal logs"
-  echo "    ${COMPOSE_CMD} restart            # Restart all containers"
-  echo "    ${COMPOSE_CMD} down               # Stop all containers"
-  if [[ "${CONTAINER_PULL}" == "true" ]]; then
-    echo "    ${COMPOSE_CMD} -f docker-compose.prod.yml pull  # Pull latest"
-    echo "    ${COMPOSE_CMD} -f docker-compose.prod.yml up -d  # Update"
-  else
-    echo "    ${COMPOSE_CMD} pull && ${COMPOSE_CMD} up -d --build  # Update"
-  fi
-  echo ""
-  echo "  Optional: Install Ollama for local LLM:"
-  echo "    curl -fsSL https://ollama.com/install.sh | sh"
-  echo "    ollama pull llama3.2:1b"
-  echo ""
-  exit 0
-fi
-
-# --- Native Installation Path ---
 
 # Check Python version
 PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "0.0")
