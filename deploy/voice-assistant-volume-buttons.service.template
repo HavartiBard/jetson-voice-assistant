@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=__JETSON_USER__
+User=root
 WorkingDirectory=__APP_DIR__
 EnvironmentFile=__APP_DIR__/.env
 ExecStart=__APP_DIR__/venv/bin/python __APP_DIR__/src/volume_button_listener.py
