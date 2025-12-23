@@ -571,6 +571,23 @@ def _choose_reasonable_control(card: str, prefer: list[str]) -> str | None:
     return controls[0] if controls else None
 
 
+def _is_internal_audio_device_name(name: str) -> bool:
+    n = (name or "").lower()
+    # Heuristic: hide Jetson internal/board audio endpoints by default.
+    # Keep USB devices visible.
+    needles = [
+        "jetson",
+        "orin",
+        "nvidia",
+        "tegra",
+        "ape",
+        "hdmi",
+        "i2s",
+        "spdif",
+    ]
+    return any(x in n for x in needles)
+
+
 @app.get("/dashboard")
 def dashboard():
     """Main dashboard with service status and analytics."""
@@ -904,12 +921,16 @@ setInterval(updateMuteStatus, 2000);
 
 @app.get("/devices")
 def devices():
+    show_all = (request.args.get("show_all") or "").strip() in ("1", "true", "yes", "on")
     body = render_template_string(
         """
 <div class="card">
   <div class="card-header">
     <h2 class="card-title">Devices</h2>
-    <button type="button" class="btn btn-secondary" onclick="refreshDevices()">↻ Refresh</button>
+    <div style="display:flex; gap: 10px; align-items:center;">
+      <button type="button" class="btn btn-secondary" onclick="refreshDevices()">↻ Refresh</button>
+      <button type="button" class="btn btn-secondary" onclick="toggleShowAll()" id="show-all-btn">—</button>
+    </div>
   </div>
   <div class="hint">Shows detected audio devices and basic controls for the currently selected input/output devices.</div>
 </div>
@@ -1003,8 +1024,17 @@ def devices():
 </div>
 
 <script>
+const SHOW_ALL = {{ 'true' if show_all else 'false' }};
+
 function esc(s) {
   return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function toggleShowAll() {
+  const url = new URL(window.location.href);
+  if (SHOW_ALL) url.searchParams.delete('show_all');
+  else url.searchParams.set('show_all', '1');
+  window.location.href = url.toString();
 }
 
 function onOutputVolumePreview() {
@@ -1068,7 +1098,7 @@ async function setInputGain() {
 
 async function refreshMixerStates() {
   try {
-    const resp = await fetch('/api/devices/state');
+    const resp = await fetch('/api/devices/state' + (SHOW_ALL ? '?show_all=1' : ''));
     const data = await resp.json();
     if (!data.success) throw new Error(data.error || 'Failed');
 
@@ -1101,7 +1131,7 @@ async function refreshDevices() {
   const table = document.getElementById('device-table');
   table.innerHTML = '<tr><td colspan="4" class="empty-state">Loading…</td></tr>';
   try {
-    const resp = await fetch('/api/devices/state');
+    const resp = await fetch('/api/devices/state' + (SHOW_ALL ? '?show_all=1' : ''));
     const data = await resp.json();
     if (!data.success) throw new Error(data.error || 'Failed');
 
@@ -1145,12 +1175,20 @@ async function refreshDevices() {
 }
 
 refreshDevices();
+document.getElementById('show-all-btn').textContent = SHOW_ALL ? 'Hide Internal Devices' : 'Show Internal Devices';
 onOutputVolumePreview();
 onInputGainPreview();
 </script>
 """
     )
-    return render_template_string(BASE_TEMPLATE, title="Devices | Jetson Assistant", body=body, flash=request.args.get("ok"), active_page="devices")
+    return render_template_string(
+        BASE_TEMPLATE,
+        title="Devices | Jetson Assistant",
+        body=body,
+        flash=request.args.get("ok"),
+        active_page="devices",
+        show_all=show_all,
+    )
 
 
 @app.get("/settings")
@@ -1941,14 +1979,19 @@ def api_mute_status():
 
 @app.get("/api/devices/state")
 def api_devices_state():
+    show_all = (request.args.get("show_all") or "").strip() in ("1", "true", "yes", "on")
     settings = load_settings()
     input_device_id = settings.get("audio_input_device", "default")
     output_device_id = settings.get("audio_output_device", "default")
 
     detected = []
     for d in get_audio_input_devices():
+        if not show_all and _is_internal_audio_device_name(d.get("name") or ""):
+            continue
         detected.append({"type": "input", "id": d.get("id"), "name": d.get("name"), "card": d.get("card")})
     for d in get_audio_output_devices():
+        if not show_all and _is_internal_audio_device_name(d.get("name") or ""):
+            continue
         detected.append({"type": "output", "id": d.get("id"), "name": d.get("name"), "card": d.get("card")})
 
     mute_status = get_mute_status(input_device_id)
