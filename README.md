@@ -81,9 +81,11 @@ A customizable voice assistant designed specifically for the NVIDIA Jetson Nano/
    
    OpenAI API key is optional - set it in the admin portal or `.env` for GPT features.
 
-   Optional: to enable Porcupine wake word detection (recommended), set `PICOVOICE_ACCESS_KEY` in `.env`.
+   Optional: to enable Porcupine wake word detection, set `PICOVOICE_ACCESS_KEY` in `.env` or via the admin portal.
    The wake word is taken from the admin portal `wake_word` setting and mapped to a built-in Porcupine keyword.
    Supported keywords: `computer`, `jarvis`, `bumblebee`, `picovoice`, `alexa`, `hey google`.
+   
+   > **Note**: Porcupine requires a compatible CPU. The Jetson Orin Nano (ARM Cortex-A78AE) is **not supported** by Picovoice. On unsupported platforms, the assistant falls back to Whisper-based wake word detection automatically.
 
 ## Usage
 
