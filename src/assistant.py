@@ -785,31 +785,70 @@ class VoiceAssistant:
             print(f"Wake word detection error: {e}", flush=True)
             return False, None
     
-    def listen_for_command(self):
-        """Listen for a command after wake word detected. Only prompts once."""
+    def listen_for_command(self, prompt=True):
+        """Listen for a command. Optionally prompts with 'Yes?'."""
         try:
-            self.speak("Yes?")
+            if prompt:
+                self.speak("Yes?")
+            
             audio_samples, raw_bytes = self._record_audio()
             
-            # Reset openWakeWord state again to clear any audio from the prompt
+            # Reset openWakeWord state to clear any audio from the prompt/response
             if self._oww_model is not None:
                 self._oww_model.reset()
             
             # Update mute state for portal
             self.check_and_update_mute_status(raw_bytes)
             
+            # Check if audio has any speech content
+            amp = get_audio_amplitude(raw_bytes)
+            if amp < 50:  # Very quiet - likely no speech
+                return ""
+            
             text = self._transcribe(audio_samples)
 
             if not text:
-                self.speak("Sorry, I didn't catch that.")
+                if prompt:
+                    self.speak("Sorry, I didn't catch that.")
                 return ""
 
             print(f"You said: {text}", flush=True)
             return text.lower()
         except Exception as e:
             print(f"Transcription error: {e}", flush=True)
-            self.speak("Sorry, I had trouble understanding.")
+            if prompt:
+                self.speak("Sorry, I had trouble understanding.")
             return ""
+    
+    def listen_for_followup(self, timeout_seconds=5.0):
+        """Listen for follow-up commands without prompting. Returns command or empty string."""
+        print("Listening for follow-up...", flush=True)
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout_seconds:
+            try:
+                audio_samples, raw_bytes = self._record_audio()
+                
+                # Reset openWakeWord state
+                if self._oww_model is not None:
+                    self._oww_model.reset()
+                
+                # Check mute status
+                self.check_and_update_mute_status(raw_bytes)
+                
+                # Check if audio has speech content
+                amp = get_audio_amplitude(raw_bytes)
+                if amp < 50:  # Very quiet - likely no speech, keep waiting
+                    continue
+                
+                text = self._transcribe(audio_samples)
+                if text:
+                    print(f"Follow-up: {text}", flush=True)
+                    return text.lower()
+            except Exception as e:
+                print(f"Follow-up listen error: {e}", flush=True)
+        
+        return ""
     
     def listen(self):
         """Legacy listen method - records and transcribes."""
@@ -990,10 +1029,17 @@ def main():
             if trailing_command:
                 command = trailing_command
             else:
-                command = assistant.listen_for_command()
+                command = assistant.listen_for_command(prompt=True)
             
-            if command:
+            # Process command and listen for follow-ups
+            while command and running:
                 running = assistant.process_command(command)
+                if not running:
+                    break
+                
+                # Listen for follow-up without prompting (5 second window)
+                command = assistant.listen_for_followup(timeout_seconds=5.0)
+            
             print(f"Waiting for wake word '{assistant.wake_word}'...", flush=True)
 
 if __name__ == "__main__":
