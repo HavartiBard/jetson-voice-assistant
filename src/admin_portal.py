@@ -4,7 +4,6 @@ import json
 import os
 import subprocess
 import socket
-import sys
 import time as time_module
 from datetime import datetime
 
@@ -1226,10 +1225,8 @@ def settings():
           <div class="hint" id="porcupine-detail">—</div>
           <div style="margin-top: 10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
             <button type="button" class="btn btn-secondary" onclick="refreshPorcupineStatus()">↻ Refresh</button>
-            <button type="button" class="btn btn-secondary" onclick="installOrUpgradePorcupine()" id="porcupine-install-btn">Install/Upgrade</button>
           </div>
-          <pre id="porcupine-install-log" style="margin-top:10px; max-height: 180px; overflow:auto; background: var(--bg-secondary); border: 1px solid var(--border); padding: 12px; border-radius: 10px; display:none;"></pre>
-          <div class="hint">After installing/upgrading, restart <code>voice-assistant.service</code> so it can import the module.</div>
+          <div class="hint">To install: <code>pip install -U pvporcupine</code> (then restart <code>voice-assistant.service</code>).</div>
         </div>
       </div>
     </div>
@@ -1367,27 +1364,6 @@ async function refreshPorcupineStatus() {
   } catch (e) {
     badge.textContent = 'Unknown';
     detail.textContent = 'Error: ' + e.message;
-  }
-}
-
-async function installOrUpgradePorcupine() {
-  const btn = document.getElementById('porcupine-install-btn');
-  const log = document.getElementById('porcupine-install-log');
-  if (!confirm('This will run pip install/upgrade for pvporcupine on the Jetson. Continue?')) return;
-  try {
-    btn.disabled = true;
-    log.style.display = 'block';
-    log.textContent = 'Running pip…\n';
-    const resp = await fetch('/api/porcupine/install', {method: 'POST'});
-    const data = await resp.json();
-    if (!data.success) throw new Error(data.error || 'Install failed');
-    log.textContent = (data.stdout || '') + (data.stderr ? ('\n' + data.stderr) : '');
-    await refreshPorcupineStatus();
-  } catch (e) {
-    log.style.display = 'block';
-    log.textContent += '\nERROR: ' + e.message;
-  } finally {
-    btn.disabled = false;
   }
 }
 
@@ -2156,22 +2132,6 @@ def api_porcupine_status():
             return jsonify({"success": True, "installed": False, "version": version, "error": str(e)[:200]})
 
         return jsonify({"success": True, "installed": installed, "version": version})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)[:200]})
-
-
-@app.post("/api/porcupine/install")
-def api_porcupine_install():
-    # Run pip inside the same environment as the portal.
-    # This mutates the system (venv site-packages), so it is only executed on explicit user action.
-    try:
-        cmd = [sys.executable, "-m", "pip", "install", "-U", "pvporcupine"]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if r.returncode != 0:
-            return jsonify({"success": False, "error": (r.stderr or r.stdout or "pip failed")[:500], "stdout": (r.stdout or "")[-4000:], "stderr": (r.stderr or "")[-4000:]})
-        return jsonify({"success": True, "stdout": (r.stdout or "")[-8000:], "stderr": (r.stderr or "")[-8000:]})
-    except subprocess.TimeoutExpired:
-        return jsonify({"success": False, "error": "pip timed out"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)[:200]})
 
