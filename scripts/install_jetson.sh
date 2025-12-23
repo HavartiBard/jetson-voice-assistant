@@ -4,8 +4,9 @@
 # Installs system dependencies, Python packages, and configures systemd services.
 #
 # Usage:
-#   ./install_jetson.sh              # Native installation (systemd)
-#   ./install_jetson.sh --container  # Container installation (Docker)
+#   ./install_jetson.sh                    # Native installation (systemd)
+#   ./install_jetson.sh --container        # Container installation (build locally)
+#   ./install_jetson.sh --container-pull   # Container installation (pull from ghcr.io)
 #
 set -euo pipefail
 
@@ -14,6 +15,9 @@ APP_DIR=${APP_DIR:-"$HOME/jetson-voice-assistant"}
 JETSON_USER=${JETSON_USER:-"$USER"}
 MIN_PYTHON_VERSION="3.10"
 USE_CONTAINER=false
+CONTAINER_PULL=false
+GHCR_IMAGE=${GHCR_IMAGE:-"ghcr.io/havartibard/jetson-voice-assistant"}
+IMAGE_TAG=${IMAGE_TAG:-"latest"}
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -22,12 +26,28 @@ while [[ $# -gt 0 ]]; do
       USE_CONTAINER=true
       shift
       ;;
+    --container-pull|-p)
+      USE_CONTAINER=true
+      CONTAINER_PULL=true
+      shift
+      ;;
+    --image)
+      GHCR_IMAGE="$2"
+      shift 2
+      ;;
+    --tag)
+      IMAGE_TAG="$2"
+      shift 2
+      ;;
     --help|-h)
       echo "Usage: $0 [OPTIONS]"
       echo ""
       echo "Options:"
-      echo "  --container, -c  Install using Docker containers"
-      echo "  --help, -h       Show this help message"
+      echo "  --container, -c       Build and run Docker containers locally"
+      echo "  --container-pull, -p  Pull pre-built containers from GitHub Registry"
+      echo "  --image IMAGE         Override container image (default: ${GHCR_IMAGE})"
+      echo "  --tag TAG             Override image tag (default: ${IMAGE_TAG})"
+      echo "  --help, -h            Show this help message"
       exit 0
       ;;
     *)
@@ -63,7 +83,14 @@ echo ""
 log_info "Configuration:"
 echo "  APP_DIR:     ${APP_DIR}"
 echo "  JETSON_USER: ${JETSON_USER}"
-echo "  MODE:        $(if [[ "${USE_CONTAINER}" == "true" ]]; then echo 'Container'; else echo 'Native'; fi)"
+if [[ "${CONTAINER_PULL}" == "true" ]]; then
+  echo "  MODE:        Container (pull from registry)"
+  echo "  IMAGE:       ${GHCR_IMAGE}:${IMAGE_TAG}"
+elif [[ "${USE_CONTAINER}" == "true" ]]; then
+  echo "  MODE:        Container (build locally)"
+else
+  echo "  MODE:        Native (systemd)"
+fi
 echo ""
 
 # --- Pre-flight checks ---
@@ -105,7 +132,12 @@ if [[ "${USE_CONTAINER}" == "true" ]]; then
   log_ok "Docker Compose found (${COMPOSE_CMD})"
 
   # Check for required container files
-  for file in Dockerfile docker-compose.yml requirements.txt .env.example; do
+  if [[ "${CONTAINER_PULL}" == "true" ]]; then
+    REQUIRED_FILES="docker-compose.prod.yml .env.example"
+  else
+    REQUIRED_FILES="Dockerfile docker-compose.yml requirements.txt .env.example"
+  fi
+  for file in ${REQUIRED_FILES}; do
     if [[ ! -f "${APP_DIR}/${file}" ]]; then
       log_error "Missing required file: ${file}"
       exit 1
@@ -138,15 +170,27 @@ if [[ "${USE_CONTAINER}" == "true" ]]; then
     log_ok "Added audio device to .env"
   fi
 
-  # --- Build containers ---
-  log_info "Building Docker containers (this may take several minutes)..."
   cd "${APP_DIR}"
-  ${COMPOSE_CMD} build --quiet
-  log_ok "Containers built"
 
-  # --- Start containers ---
-  log_info "Starting containers..."
-  ${COMPOSE_CMD} up -d
+  # --- Build or Pull containers ---
+  if [[ "${CONTAINER_PULL}" == "true" ]]; then
+    log_info "Pulling containers from ${GHCR_IMAGE}:${IMAGE_TAG}..."
+    export GHCR_IMAGE IMAGE_TAG
+    ${COMPOSE_CMD} -f docker-compose.prod.yml pull
+    log_ok "Containers pulled"
+
+    # --- Start containers ---
+    log_info "Starting containers..."
+    ${COMPOSE_CMD} -f docker-compose.prod.yml up -d
+  else
+    log_info "Building Docker containers (this may take several minutes)..."
+    ${COMPOSE_CMD} build --quiet
+    log_ok "Containers built"
+
+    # --- Start containers ---
+    log_info "Starting containers..."
+    ${COMPOSE_CMD} up -d
+  fi
 
   # Brief wait to check if containers started
   sleep 3
@@ -177,7 +221,12 @@ if [[ "${USE_CONTAINER}" == "true" ]]; then
   echo "    ${COMPOSE_CMD} logs -f portal     # View portal logs"
   echo "    ${COMPOSE_CMD} restart            # Restart all containers"
   echo "    ${COMPOSE_CMD} down               # Stop all containers"
-  echo "    ${COMPOSE_CMD} pull && ${COMPOSE_CMD} up -d --build  # Update"
+  if [[ "${CONTAINER_PULL}" == "true" ]]; then
+    echo "    ${COMPOSE_CMD} -f docker-compose.prod.yml pull  # Pull latest"
+    echo "    ${COMPOSE_CMD} -f docker-compose.prod.yml up -d  # Update"
+  else
+    echo "    ${COMPOSE_CMD} pull && ${COMPOSE_CMD} up -d --build  # Update"
+  fi
   echo ""
   echo "  Optional: Install Ollama for local LLM:"
   echo "    curl -fsSL https://ollama.com/install.sh | sh"

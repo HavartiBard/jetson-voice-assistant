@@ -1,0 +1,63 @@
+# Jetson Voice Assistant - Production Docker Compose
+#
+# Pulls pre-built images from GitHub Container Registry instead of building locally.
+# Much faster deployment on Jetson since no local build is required.
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.prod.yml logs -f
+#   docker compose -f docker-compose.prod.yml pull  # Update to latest
+#
+# Set GHCR_IMAGE to override the image location if using a fork.
+
+x-common: &common
+  image: ${GHCR_IMAGE:-ghcr.io/havartibard/jetson-voice-assistant}:${IMAGE_TAG:-latest}
+  restart: unless-stopped
+  env_file:
+    - .env
+
+services:
+  assistant:
+    <<: *common
+    container_name: voice-assistant
+    
+    # Audio hardware access
+    devices:
+      - /dev/snd:/dev/snd
+    group_add:
+      - audio
+    
+    environment:
+      - AUDIO_INPUT_DEVICE=${AUDIO_INPUT_DEVICE:-hw:0,0}
+      - AUDIO_OUTPUT_DEVICE=${AUDIO_OUTPUT_DEVICE:-plughw:0,0}
+      - WHISPER_MODE=${WHISPER_MODE:-local}
+      - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-small}
+      - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-en}
+    
+    volumes:
+      - ./config:/app/config
+      - ./models:/app/models
+    
+    networks:
+      - voice-net
+
+  portal:
+    <<: *common
+    container_name: voice-assistant-portal
+    command: ["python", "src/admin_portal.py"]
+    
+    volumes:
+      - ./config:/app/config
+    
+    ports:
+      - "8080:8080"
+    
+    networks:
+      - voice-net
+    
+    depends_on:
+      - assistant
+
+networks:
+  voice-net:
+    driver: bridge
