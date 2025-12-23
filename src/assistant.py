@@ -720,6 +720,14 @@ class VoiceAssistant:
                         print(f"Wake word detected (openWakeWord: {model_name}, score={score:.3f})", flush=True)
                         # Reset model state to prevent repeated detections
                         self._oww_model.reset()
+                        
+                        # Record full audio to capture any trailing command
+                        audio_samples, raw_bytes = self._record_audio()
+                        text = self._transcribe(audio_samples)
+                        if text:
+                            trailing = text.lower().strip()
+                            print(f"Trailing command: {trailing}", flush=True)
+                            return True, trailing
                         return True, None
                 
                 return False, None
@@ -826,13 +834,10 @@ class VoiceAssistant:
                     self._oww_model.reset()
                 
                 # Check mute status
-                self.check_and_update_mute_status(raw_bytes)
-                
-                # Check if audio has speech content
-                amp = get_audio_amplitude(raw_bytes)
-                if amp < 50:  # Very quiet - likely no speech, keep waiting
+                if self.check_and_update_mute_status(raw_bytes):
                     continue
                 
+                # Transcribe - let Whisper decide if there's speech
                 text = self._transcribe(audio_samples)
                 if text:
                     print(f"Follow-up: {text}", flush=True)
