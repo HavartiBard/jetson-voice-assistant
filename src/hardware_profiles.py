@@ -94,7 +94,7 @@ def get_hardware_profile(device_id: str) -> HardwareProfile:
             name="anker_powerconf_s330",
             preferred_capture_device=device_id.replace('hw:', 'plughw:'),
             prefer_capture_channels=2,
-            mute_detection="none",
+            mute_detection="amplitude_zero",
         )
 
     return HardwareProfile(name="default")
