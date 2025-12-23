@@ -718,6 +718,8 @@ class VoiceAssistant:
                 for model_name, score in prediction.items():
                     if score > 0.5:  # Threshold
                         print(f"Wake word detected (openWakeWord: {model_name}, score={score:.3f})", flush=True)
+                        # Reset model state to prevent repeated detections
+                        self._oww_model.reset()
                         return True, None
                 
                 return False, None
@@ -784,10 +786,14 @@ class VoiceAssistant:
             return False, None
     
     def listen_for_command(self):
-        """Listen for a command after wake word detected."""
+        """Listen for a command after wake word detected. Only prompts once."""
         try:
             self.speak("Yes?")
             audio_samples, raw_bytes = self._record_audio()
+            
+            # Reset openWakeWord state again to clear any audio from the prompt
+            if self._oww_model is not None:
+                self._oww_model.reset()
             
             # Update mute state for portal
             self.check_and_update_mute_status(raw_bytes)
