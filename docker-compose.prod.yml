@@ -47,6 +47,12 @@ services:
     container_name: voice-assistant-portal
     command: ["python", "src/admin_portal.py"]
     
+    # Audio device access for status checking
+    devices:
+      - /dev/snd:/dev/snd
+    group_add:
+      - audio
+    
     volumes:
       - ./config:/app/config
     

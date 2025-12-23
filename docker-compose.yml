@@ -63,6 +63,12 @@ services:
     env_file:
       - .env
     
+    # Audio device access for status checking
+    devices:
+      - /dev/snd:/dev/snd
+    group_add:
+      - audio
+    
     # Shared config with assistant
     volumes:
       - ./config:/app/config
