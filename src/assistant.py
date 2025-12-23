@@ -690,10 +690,9 @@ class VoiceAssistant:
         try:
             # Preferred: openWakeWord for fast, low-latency detection
             if self._oww_model is not None:
-                frame_bytes = self._audio_stream.read_bytes(
-                    self._oww_frame_size * 2,  # 16-bit = 2 bytes per sample
-                    timeout_seconds=2.0
-                )
+                # Account for stereo: read enough bytes for channels, then downmix to mono
+                bytes_per_frame = self._oww_frame_size * 2 * self._audio_stream_channels
+                frame_bytes = self._audio_stream.read_bytes(bytes_per_frame, timeout_seconds=2.0)
                 
                 now = time.time()
                 if now - self._last_noise_log_ts >= 2.0:
@@ -705,8 +704,12 @@ class VoiceAssistant:
                 if self.check_and_update_mute_status(frame_bytes):
                     return False, None
                 
-                # Convert to int16 numpy array for openWakeWord
+                # Convert to int16 numpy array
                 pcm = np.frombuffer(frame_bytes, dtype=np.int16)
+                
+                # Downmix stereo to mono if needed (openWakeWord expects mono 16kHz)
+                if self._audio_stream_channels == 2:
+                    pcm = pcm.reshape(-1, 2).mean(axis=1).astype(np.int16)
                 
                 # openWakeWord expects chunks of 1280 samples (80ms at 16kHz)
                 prediction = self._oww_model.predict(pcm)
