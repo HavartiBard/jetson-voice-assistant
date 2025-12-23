@@ -405,12 +405,18 @@ def root():
 
 def _is_running_in_container() -> bool:
     """Detect if running inside a Docker container."""
+    # Check for .dockerenv file (most reliable)
+    if os.path.exists('/.dockerenv'):
+        return True
+    # Check cgroup for docker/containerd (older Docker versions)
     try:
         with open('/proc/1/cgroup', 'r') as f:
-            return 'docker' in f.read() or 'containerd' in f.read()
+            content = f.read()
+            if 'docker' in content or 'containerd' in content:
+                return True
     except Exception:
         pass
-    return os.path.exists('/.dockerenv')
+    return False
 
 
 def _check_service_status(service_name: str) -> dict:
