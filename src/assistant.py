@@ -335,7 +335,7 @@ class VoiceAssistant:
             
             self._oww_model = OwwModel(
                 wakeword_models=[model_name],
-                inference_framework='tflite',
+                inference_framework='onnx',
             )
             print(f"openWakeWord enabled (model='{model_name}')", flush=True)
         except Exception as e:
