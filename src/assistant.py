@@ -785,39 +785,31 @@ class VoiceAssistant:
             print(f"Wake word detection error: {e}", flush=True)
             return False, None
     
-    def listen_for_command(self, prompt=True):
-        """Listen for a command. Optionally prompts with 'Yes?'."""
+    def listen_for_command(self):
+        """Listen for a command after wake word. Prompts with 'Yes?'."""
         try:
-            if prompt:
-                self.speak("Yes?")
+            self.speak("Yes?")
             
             audio_samples, raw_bytes = self._record_audio()
             
-            # Reset openWakeWord state to clear any audio from the prompt/response
+            # Reset openWakeWord state to clear any audio from the prompt
             if self._oww_model is not None:
                 self._oww_model.reset()
             
             # Update mute state for portal
             self.check_and_update_mute_status(raw_bytes)
             
-            # Check if audio has any speech content
-            amp = get_audio_amplitude(raw_bytes)
-            if amp < 50:  # Very quiet - likely no speech
-                return ""
-            
             text = self._transcribe(audio_samples)
 
             if not text:
-                if prompt:
-                    self.speak("Sorry, I didn't catch that.")
+                self.speak("Sorry, I didn't catch that.")
                 return ""
 
             print(f"You said: {text}", flush=True)
             return text.lower()
         except Exception as e:
             print(f"Transcription error: {e}", flush=True)
-            if prompt:
-                self.speak("Sorry, I had trouble understanding.")
+            self.speak("Sorry, I had trouble understanding.")
             return ""
     
     def listen_for_followup(self, timeout_seconds=5.0):
@@ -1029,16 +1021,18 @@ def main():
             if trailing_command:
                 command = trailing_command
             else:
-                command = assistant.listen_for_command(prompt=True)
+                command = assistant.listen_for_command()
             
-            # Process command and listen for follow-ups
-            while command and running:
+            # Process command if we got one
+            if command:
                 running = assistant.process_command(command)
-                if not running:
-                    break
                 
-                # Listen for follow-up without prompting (5 second window)
-                command = assistant.listen_for_followup(timeout_seconds=5.0)
+                # After responding, listen for follow-ups (5 second window, no prompt)
+                while running:
+                    followup = assistant.listen_for_followup(timeout_seconds=5.0)
+                    if not followup:
+                        break  # No follow-up, go back to wake word
+                    running = assistant.process_command(followup)
             
             print(f"Waiting for wake word '{assistant.wake_word}'...", flush=True)
 
