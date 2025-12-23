@@ -60,16 +60,34 @@ def _amixer_toggle_playback_switch(card_index: int, numid: int) -> None:
 
 
 def _find_input_device_path() -> str:
-    # Prefer stable symlink by-id if present
-    by_id = "/dev/input/by-id"
-    if os.path.isdir(by_id):
-        for name in sorted(os.listdir(by_id)):
-            if "ANKER_Anker_PowerConf_S330" in name and "event" in name and "Consumer" not in name:
-                return os.path.join(by_id, name)
-            if "ANKER_Anker_PowerConf_S330" in name and "event" in name:
-                return os.path.join(by_id, name)
+    """Find an input event device that actually emits volume key events.
 
-    # Fallback: scan /proc/bus/input/devices for a handler
+    The S330 exposes multiple HID interfaces; only the "Consumer Control" one
+    emits KEY_VOLUMEUP/DOWN/MUTE.
+    """
+    # Best approach: scan event devices and pick the one with volume keys.
+    candidates = []
+    for i in range(0, 64):
+        path = f"/dev/input/event{i}"
+        if not os.path.exists(path):
+            continue
+        try:
+            dev = InputDevice(path)
+            name = (getattr(dev, 'name', '') or '').lower()
+            if 'anker' not in name or 'powerconf' not in name or 's330' not in name:
+                continue
+            caps = dev.capabilities(verbose=False)
+            keys = set(caps.get(ecodes.EV_KEY, []))
+            if ecodes.KEY_VOLUMEUP in keys or ecodes.KEY_VOLUMEDOWN in keys or ecodes.KEY_MUTE in keys:
+                candidates.append(path)
+        except Exception:
+            continue
+
+    if candidates:
+        # Prefer the first found; usually only one matches.
+        return candidates[0]
+
+    # Fallback: scan /proc/bus/input/devices for a handler with Consumer Control
     try:
         with open("/proc/bus/input/devices", "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
@@ -82,7 +100,7 @@ def _find_input_device_path() -> str:
     except Exception:
         pass
 
-    raise RuntimeError("Unable to locate Anker S330 input event device")
+    raise RuntimeError("Unable to locate Anker S330 consumer control input device")
 
 
 def main():
