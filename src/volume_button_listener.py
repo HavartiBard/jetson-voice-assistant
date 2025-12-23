@@ -26,37 +26,94 @@ def _run(cmd):
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
-def _amixer_get_numid(card_index: int, numid: int) -> int:
-    r = _run(["amixer", "-c", str(card_index), "cget", f"numid={numid}"])
+def _amixer_scontrols(card_index: int) -> list[str]:
+    r = _run(["amixer", "-c", str(card_index), "scontrols"])
     if r.returncode != 0:
-        raise RuntimeError(r.stderr.strip() or r.stdout.strip())
-    m = re.search(r"\bvalues=([0-9]+)", r.stdout)
+        return []
+
+    names: list[str] = []
+    for line in (r.stdout or "").splitlines():
+        line = line.strip()
+        if not line.startswith("Simple mixer control"):
+            continue
+        # Simple mixer control 'Master',0
+        start = line.find("'")
+        end = line.rfind("'")
+        if start != -1 and end != -1 and end > start:
+            names.append(line[start + 1 : end])
+    return names
+
+
+def _choose_control(card_index: int) -> str:
+    prefer = ["Anker PowerConf S330", "Master", "PCM", "Speaker"]
+    controls = _amixer_scontrols(card_index)
+    if not controls:
+        raise RuntimeError("No mixer controls found")
+
+    lower_map = {c.lower(): c for c in controls}
+    for p in prefer:
+        if p.lower() in lower_map:
+            return lower_map[p.lower()]
+
+    # Fallback: choose first control (best-effort)
+    return controls[0]
+
+
+def _amixer_sget(card_index: int, control: str) -> subprocess.CompletedProcess:
+    return _run(["amixer", "-c", str(card_index), "sget", control])
+
+
+def _parse_percent(stdout: str) -> int | None:
+    m = re.search(r"\[(\d+)%\]", stdout)
     if not m:
-        raise RuntimeError("Unable to parse amixer output")
-    return int(m.group(1))
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
 
 
-def _amixer_set_numid(card_index: int, numid: int, value: int) -> None:
-    r = _run(["amixer", "-c", str(card_index), "cset", f"numid={numid}", str(value)])
+def _parse_switch_on(stdout: str) -> bool | None:
+    m = re.search(r"\[(on|off)\]", stdout, flags=re.IGNORECASE)
+    if not m:
+        return None
+    return m.group(1).lower() == "on"
+
+
+def _amixer_get_volume_percent(card_index: int, control: str) -> int:
+    r = _amixer_sget(card_index, control)
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip() or r.stdout.strip())
+    pct = _parse_percent(r.stdout)
+    if pct is None:
+        raise RuntimeError("Unable to parse current volume percent")
+    return pct
+
+
+def _amixer_set_volume_percent(card_index: int, control: str, percent: int) -> None:
+    percent = max(0, min(100, int(percent)))
+    r = _run(["amixer", "-c", str(card_index), "sset", control, f"{percent}%"])
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip() or r.stdout.strip())
 
 
-def _amixer_toggle_playback_switch(card_index: int, numid: int) -> None:
-    r = _run(["amixer", "-c", str(card_index), "cget", f"numid={numid}"])
-    if r.returncode != 0:
-        raise RuntimeError(r.stderr.strip() or r.stdout.strip())
-    # Most controls show: values=on/off or values=0/1
-    if "values=on" in r.stdout:
-        _amixer_set_numid(card_index, numid, 0)
-    elif "values=off" in r.stdout:
-        _amixer_set_numid(card_index, numid, 1)
-    else:
-        m = re.search(r"\bvalues=([01])\b", r.stdout)
-        if not m:
-            raise RuntimeError("Unable to parse playback switch")
-        cur = int(m.group(1))
-        _amixer_set_numid(card_index, numid, 0 if cur else 1)
+def _amixer_toggle_mute(card_index: int, control: str) -> None:
+    # Many controls support toggle directly.
+    r = _run(["amixer", "-c", str(card_index), "sset", control, "toggle"])
+    if r.returncode == 0:
+        return
+
+    # Fallback: read on/off then mute/unmute
+    g = _amixer_sget(card_index, control)
+    if g.returncode != 0:
+        raise RuntimeError(g.stderr.strip() or g.stdout.strip())
+    cur = _parse_switch_on(g.stdout)
+    if cur is None:
+        raise RuntimeError(r.stderr.strip() or r.stdout.strip() or "Mute toggle failed")
+
+    r2 = _run(["amixer", "-c", str(card_index), "sset", control, "mute" if cur else "unmute"])
+    if r2.returncode != 0:
+        raise RuntimeError(r2.stderr.strip() or r2.stdout.strip())
 
 
 def _find_input_device_path() -> str:
@@ -113,15 +170,12 @@ def main():
     if card_index is None:
         raise RuntimeError(f"Unable to determine ALSA card index from audio_output_device='{out_dev}'")
 
-    # Anker S330 controls (confirmed via amixer -c <card> contents)
-    playback_volume_numid = 3
-    playback_switch_numid = 2
-    max_vol = 127
-    step = max(1, int(round(max_vol * 0.05)))  # ~5%
+    control = _choose_control(card_index)
+    step = 5  # percent
 
     path = _find_input_device_path()
     dev = InputDevice(path)
-    print(f"Listening for volume keys on {path} (card {card_index})", flush=True)
+    print(f"Listening for volume keys on {path} (card {card_index}, control '{control}')", flush=True)
 
     # Avoid key-repeat spam: only act on key-down events
     for event in dev.read_loop():
@@ -132,19 +186,19 @@ def main():
             continue
 
         if event.code == ecodes.KEY_VOLUMEUP:
-            cur = _amixer_get_numid(card_index, playback_volume_numid)
-            nxt = min(max_vol, cur + step)
-            _amixer_set_numid(card_index, playback_volume_numid, nxt)
-            print(f"VOL+ {cur}->{nxt}", flush=True)
+            cur = _amixer_get_volume_percent(card_index, control)
+            nxt = min(100, cur + step)
+            _amixer_set_volume_percent(card_index, control, nxt)
+            print(f"VOL+ {cur}%->{nxt}%", flush=True)
 
         elif event.code == ecodes.KEY_VOLUMEDOWN:
-            cur = _amixer_get_numid(card_index, playback_volume_numid)
+            cur = _amixer_get_volume_percent(card_index, control)
             nxt = max(0, cur - step)
-            _amixer_set_numid(card_index, playback_volume_numid, nxt)
-            print(f"VOL- {cur}->{nxt}", flush=True)
+            _amixer_set_volume_percent(card_index, control, nxt)
+            print(f"VOL- {cur}%->{nxt}%", flush=True)
 
         elif event.code == ecodes.KEY_MUTE:
-            _amixer_toggle_playback_switch(card_index, playback_switch_numid)
+            _amixer_toggle_mute(card_index, control)
             print("MUTE toggle", flush=True)
 
         time.sleep(0.01)
