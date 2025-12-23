@@ -1,0 +1,83 @@
+# Jetson Voice Assistant - Portainer Stack
+#
+# Deploy via Portainer:
+#   1. Stacks → Add Stack → Repository
+#   2. Repository URL: https://github.com/HavartiBard/jetson-voice-assistant
+#   3. Compose path: docker-compose.stack.yml
+#   4. Set environment variables below
+#
+# Or deploy manually:
+#   docker compose -f docker-compose.stack.yml up -d
+#
+# Required: Create config/ and models/ directories on the host before deploying.
+# Required: Create .env file or set environment variables in Portainer.
+
+services:
+  assistant:
+    image: ${IMAGE:-ghcr.io/havartibard/jetson-voice-assistant}:${TAG:-latest}
+    container_name: voice-assistant
+    restart: unless-stopped
+    
+    # Audio hardware access - required for microphone/speaker
+    devices:
+      - /dev/snd:/dev/snd
+    group_add:
+      - audio
+    privileged: false
+    
+    environment:
+      # Audio devices - find with: arecord -l
+      - AUDIO_INPUT_DEVICE=${AUDIO_INPUT_DEVICE:-hw:0,0}
+      - AUDIO_OUTPUT_DEVICE=${AUDIO_OUTPUT_DEVICE:-plughw:0,0}
+      # Whisper STT
+      - WHISPER_MODE=${WHISPER_MODE:-local}
+      - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-small}
+      - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-en}
+      # Wake word
+      - WAKE_WORD=${WAKE_WORD:-computer}
+      - PICOVOICE_ACCESS_KEY=${PICOVOICE_ACCESS_KEY:-}
+      # LLM
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+    
+    volumes:
+      - ${CONFIG_PATH:-./config}:/app/config
+      - ${MODELS_PATH:-./models}:/app/models
+    
+    networks:
+      - voice-net
+    
+    # Add host.docker.internal for Ollama access
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  portal:
+    image: ${IMAGE:-ghcr.io/havartibard/jetson-voice-assistant}:${TAG:-latest}
+    container_name: voice-assistant-portal
+    restart: unless-stopped
+    command: ["python", "src/admin_portal.py"]
+    
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+    
+    volumes:
+      - ${CONFIG_PATH:-./config}:/app/config
+    
+    ports:
+      - "${PORTAL_PORT:-8080}:8080"
+    
+    networks:
+      - voice-net
+    
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
+    depends_on:
+      - assistant
+
+networks:
+  voice-net:
+    driver: bridge
