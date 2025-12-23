@@ -7,6 +7,7 @@ from typing import Optional
 @dataclass(frozen=True)
 class HardwareProfile:
     name: str
+    preferred_capture_device: Optional[str] = None  # e.g. "plughw:X,0" override
     prefer_capture_channels: Optional[int] = None
     mute_detection: str = "none"  # "none" | "amplitude_zero"
 
@@ -86,10 +87,12 @@ def get_hardware_profile(device_id: str) -> HardwareProfile:
             mute_detection="amplitude_zero",
         )
 
-    if "anker" in blob and ("powerconf" in blob or "s330" in blob):
-        # Anker PowerConf often exposes capture as stereo; we'll downmix.
+    if ("anker" in blob and ("powerconf" in blob or "s330" in blob)) or ("s330" in blob):
+        # Anker PowerConf S330 often exposes capture as stereo; we'll downmix.
+        # Some devices behave better through plughw (rate/channel conversion).
         return HardwareProfile(
             name="anker_powerconf_s330",
+            preferred_capture_device=device_id.replace('hw:', 'plughw:'),
             prefer_capture_channels=2,
             mute_detection="none",
         )

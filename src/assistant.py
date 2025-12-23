@@ -227,6 +227,10 @@ class VoiceAssistant:
         self._hardware_profile = get_hardware_profile(self.audio_device)
         print(f"Audio hardware profile: {self._hardware_profile.name}", flush=True)
 
+        self._capture_device = self._hardware_profile.preferred_capture_device or self.audio_device
+        if self._capture_device != self.audio_device:
+            print(f"Audio capture device override: {self.audio_device} -> {self._capture_device}", flush=True)
+
         # Capture at the same rate Whisper expects to avoid resampling artifacts.
         # Playback is handled by temporarily stopping capture during TTS.
         self._capture_sample_rate = self.audio_sample_rate
@@ -235,18 +239,18 @@ class VoiceAssistant:
         # Probe the device to pick a supported channel count.
         preferred_channels = self._hardware_profile.prefer_capture_channels or self.audio_channels
         self._audio_stream_channels = self._probe_capture_channels(
-            self.audio_device,
+            self._capture_device,
             self._capture_sample_rate,
             preferred=preferred_channels,
         )
         
         # Initialize persistent audio stream (keeps device open to prevent Jabra mute reset)
         self._audio_stream = PersistentAudioStream(
-            self.audio_device,
+            self._capture_device,
             sample_rate=self._capture_sample_rate,
             channels=self._audio_stream_channels
         )
-        self._audio_stream_device = self.audio_device
+        self._audio_stream_device = self._capture_device
         
         # Hardware mute state tracking with hysteresis
         self._last_mute_state = False
