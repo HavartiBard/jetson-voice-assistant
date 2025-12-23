@@ -18,6 +18,7 @@ from faster_whisper import WhisperModel
 from settings_store import load_settings
 from history_store import record_query
 from ollama_client import OllamaClient
+from hardware_profiles import get_hardware_profile
 from audio_devices import (
     check_audio_has_speech,
     get_audio_amplitude,
@@ -222,16 +223,21 @@ class VoiceAssistant:
         
         print(f"Using audio device: {self.audio_device}", flush=True)
 
+        # Apply device-specific quirks/capabilities
+        self._hardware_profile = get_hardware_profile(self.audio_device)
+        print(f"Audio hardware profile: {self._hardware_profile.name}", flush=True)
+
         # Capture at the same rate Whisper expects to avoid resampling artifacts.
         # Playback is handled by temporarily stopping capture during TTS.
         self._capture_sample_rate = self.audio_sample_rate
 
         # Some USB speakerphones expose capture only as stereo (channels=2).
         # Probe the device to pick a supported channel count.
+        preferred_channels = self._hardware_profile.prefer_capture_channels or self.audio_channels
         self._audio_stream_channels = self._probe_capture_channels(
             self.audio_device,
             self._capture_sample_rate,
-            preferred=self.audio_channels,
+            preferred=preferred_channels,
         )
         
         # Initialize persistent audio stream (keeps device open to prevent Jabra mute reset)
@@ -427,7 +433,10 @@ class VoiceAssistant:
     def check_and_update_mute_status(self, audio_data: bytes) -> bool:
         """Check if microphone is hardware muted and update state.
 
-        For Jabra, hardware mute produces literal zero audio samples.
+        For devices that support it (e.g., Jabra SPEAK), hardware mute produces
+        literal zero audio samples. We only apply that rule when the active
+        hardware profile requests it.
+
         Uses a small hysteresis: 2 consecutive zero-amplitude windows to mute,
         and 1 non-zero window to unmute.
 
@@ -437,9 +446,16 @@ class VoiceAssistant:
         Returns:
             bool: True if microphone is currently muted
         """
-        amp = get_audio_amplitude(audio_data)
+        # Default: do not infer "hardware mute" from audio for unknown devices.
+        if getattr(self, '_hardware_profile', None) is None or getattr(self._hardware_profile, 'mute_detection', 'none') != 'amplitude_zero':
+            write_mute_state(False)
+            self._last_mute_state = False
+            self._mute_counter = 0
+            return False
 
-        # Jabra mute produces literal zeros. Use a small hysteresis:
+        # Detect hardware mute by checking if max sample amplitude is exactly zero.
+        amp = get_audio_amplitude(audio_data)
+        # Use a small hysteresis:
         # - Mute: 2 consecutive zero-amplitude windows
         # - Unmute: 1 non-zero window
         if amp == 0:
