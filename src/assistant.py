@@ -674,6 +674,12 @@ class VoiceAssistant:
     
     def _transcribe(self, audio_samples):
         """Transcribe audio samples to text."""
+        # Skip transcription if audio is too quiet (prevents Whisper hallucinations)
+        if len(audio_samples) > 0:
+            peak = float(np.max(np.abs(audio_samples)))
+            if peak < 0.02:  # Essentially silent even after gain
+                return ""
+        
         if self.whisper_mode == 'api':
             return self._transcribe_api(audio_samples)
         else:
