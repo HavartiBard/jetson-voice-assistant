@@ -45,8 +45,9 @@ WORKDIR /app
 COPY --chown=assistant:assistant requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
-    # Fix openWakeWord resources permissions for non-root user
-    chmod -R a+rw /usr/local/lib/python3.10/site-packages/openwakeword/resources 2>/dev/null || true
+    # Create openWakeWord resources directory with proper permissions
+    mkdir -p /usr/local/lib/python3.10/site-packages/openwakeword/resources && \
+    chmod -R 777 /usr/local/lib/python3.10/site-packages/openwakeword/resources
 
 # Copy application code
 COPY --chown=assistant:assistant src/ ./src/
