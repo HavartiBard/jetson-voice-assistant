@@ -1215,6 +1215,16 @@ def settings():
     <div class="form-group">
       <div class="form-row">
         <div>
+          <label for="picovoice_access_key">Picovoice Access Key (Porcupine)</label>
+          <input id="picovoice_access_key" name="picovoice_access_key" type="password" value="{{ s.get('picovoice_access_key', '') }}" placeholder="pv_..." />
+          <div class="hint">Optional. Enables Porcupine wake word detection. Get a free key at <a href="https://console.picovoice.ai/" target="_blank">console.picovoice.ai →</a></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <div class="form-row">
+        <div>
           <label for="wake_word">Wake Word</label>
           <input id="wake_word" name="wake_word" value="{{ s['wake_word'] }}" />
           <div class="hint">Trigger word to activate the assistant</div>
@@ -1349,8 +1359,12 @@ def save_settings_route():
     api_key_from_form = request.form.get("openai_api_key", "").strip()
     api_key = api_key_from_form if api_key_from_form else current.get("openai_api_key", "")
 
+    pv_key_from_form = request.form.get("picovoice_access_key", "").strip()
+    pv_key = pv_key_from_form if pv_key_from_form else current.get("picovoice_access_key", "")
+
     new_settings = {
         "openai_api_key": api_key,
+        "picovoice_access_key": pv_key,
         "wake_word": (request.form.get("wake_word") or current.get("wake_word", "jetson")).strip(),
         "whisper_mode": (request.form.get("whisper_mode") or current.get("whisper_mode", "local")).strip().lower(),
         "whisper_model_size": (request.form.get("whisper_model_size") or current.get("whisper_model_size", "small")).strip(),

@@ -311,8 +311,11 @@ class VoiceAssistant:
     def _init_porcupine(self):
         """Initialize Porcupine if PICOVOICE_ACCESS_KEY is present."""
         try:
-            access_key = (os.getenv('PICOVOICE_ACCESS_KEY') or '').strip()
+            # Settings.json should take priority, but allow env var as fallback.
+            access_key = (getattr(self, 'picovoice_access_key', '') or os.getenv('PICOVOICE_ACCESS_KEY') or '').strip()
             if not access_key:
+                self._porcupine = None
+                self._porcupine_frame_bytes = None
                 return
             if pvporcupine is None:
                 print("PICOVOICE_ACCESS_KEY set but pvporcupine is not installed; falling back to Whisper wake word.", flush=True)
@@ -372,6 +375,9 @@ class VoiceAssistant:
         # Wake word from settings (portal) takes priority
         self.wake_word = (settings.get('wake_word') or os.getenv('WAKE_WORD') or 'jetson').strip().lower()
 
+        # Porcupine access key (portal) takes priority
+        self.picovoice_access_key = (settings.get('picovoice_access_key') or '').strip()
+
         self.whisper_mode = (settings.get('whisper_mode') or os.getenv('WHISPER_MODE') or 'local').strip().lower()
         self.whisper_model_size = (settings.get('whisper_model_size') or os.getenv('WHISPER_MODEL_SIZE') or 'small').strip()
         self.whisper_language = (settings.get('whisper_language') or os.getenv('WHISPER_LANGUAGE') or 'en').strip()
@@ -407,6 +413,7 @@ class VoiceAssistant:
                 os.unlink(self._reload_signal_path)
                 print("Reload signal detected, reloading settings...", flush=True)
                 old_wake_word = self.wake_word
+                old_pv_key = getattr(self, 'picovoice_access_key', '')
                 old_whisper_mode = getattr(self, 'whisper_mode', None)
                 old_whisper_model_size = getattr(self, 'whisper_model_size', None)
                 self._load_settings()
@@ -419,6 +426,17 @@ class VoiceAssistant:
                     self._init_whisper_model()
                 if old_wake_word != self.wake_word:
                     self.speak(f"Wake word changed to {self.wake_word}")
+
+                # Re-init Porcupine if wake word or key changed
+                if old_wake_word != self.wake_word or old_pv_key != getattr(self, 'picovoice_access_key', ''):
+                    try:
+                        if self._porcupine is not None:
+                            self._porcupine.delete()
+                    except Exception:
+                        pass
+                    self._porcupine = None
+                    self._porcupine_frame_bytes = None
+                    self._init_porcupine()
             except Exception as e:
                 print(f"Error reloading settings: {e}", flush=True)
 
