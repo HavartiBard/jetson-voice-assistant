@@ -81,12 +81,6 @@ A customizable voice assistant designed specifically for the NVIDIA Jetson Nano/
    
    OpenAI API key is optional - set it in the admin portal or `.env` for GPT features.
 
-   Optional: to enable Porcupine wake word detection, set `PICOVOICE_ACCESS_KEY` in `.env` or via the admin portal.
-   The wake word is taken from the admin portal `wake_word` setting and mapped to a built-in Porcupine keyword.
-   Supported keywords: `computer`, `jarvis`, `bumblebee`, `picovoice`, `alexa`, `hey google`.
-   
-   > **Note**: Porcupine requires a compatible CPU. The Jetson Orin Nano (ARM Cortex-A78AE) is **not supported** by Picovoice. On unsupported platforms, the assistant falls back to Whisper-based wake word detection automatically.
-
 ## Usage
 
 Run the assistant:
@@ -204,11 +198,6 @@ Settings are loaded with this priority (highest first):
 | `tts_language` | `en` | Language code for text-to-speech |
 | `tts_speed` | `150` | Speech rate for espeak/pyttsx3 (words per minute) |
 
-Wake word detection:
-
-- If `PICOVOICE_ACCESS_KEY` is set in `.env`, the assistant uses Porcupine keyword spotting for wake word detection.
-- Otherwise, it falls back to Whisper-based wake word detection.
-
 ## Customization
 
 Extend the assistant by adding new commands to the `process_command` method in `src/assistant.py`.
@@ -286,7 +275,7 @@ jetson-voice-assistant/
 ## Acknowledgments
 
 - [faster-whisper](https://github.com/guillaumekln/faster-whisper) - Local speech recognition
-- [Picovoice Porcupine](https://picovoice.ai/platform/porcupine/) - Wake word detection
+- [openWakeWord](https://github.com/dscripka/openWakeWord) - Wake word detection
 - [gTTS](https://github.com/pndurette/gTTS) - Google Text-to-Speech
 - [OpenAI](https://openai.com/) - GPT and Whisper API
 - [Ollama](https://ollama.com/) - Local LLM inference

@@ -5,7 +5,6 @@ from typing import Any, Dict
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "openai_api_key": "",
-    "picovoice_access_key": "",
     "wake_word": "jetson",
     "whisper_mode": "local",
     "whisper_model_size": "small",

@@ -29,9 +29,11 @@ import threading
 from collections import deque
 
 try:
-    import pvporcupine
+    import openwakeword
+    from openwakeword.model import Model as OwwModel
 except Exception:
-    pvporcupine = None
+    openwakeword = None
+    OwwModel = None
 
 
 class PersistentAudioStream:
@@ -258,13 +260,13 @@ class VoiceAssistant:
         self._mute_counter = 0  # Counter for hysteresis
         self._last_noise_log_ts = 0.0
         
+        # Initialize openWakeWord for fast wake word detection
+        self._oww_model = None
+        self._oww_frame_size = 1280  # 80ms at 16kHz (openWakeWord default)
+        self._init_openwakeword()
+        
         # Greeting message
         self.speak("Hello! I'm your Jetson Voice Assistant. How can I help you today?")
-
-        # Optional Porcupine wake word engine (preferred over Whisper-based wake word)
-        self._porcupine = None
-        self._porcupine_frame_bytes = None
-        self._init_porcupine()
 
     def _probe_capture_channels(self, device: str, sample_rate: int, preferred: int = 1) -> int:
         """Pick a capture channel count supported by the ALSA device.
@@ -308,39 +310,37 @@ class VoiceAssistant:
         print(f"Audio capture channel probe failed; defaulting to {preferred}", flush=True)
         return preferred
 
-    def _init_porcupine(self):
-        """Initialize Porcupine if PICOVOICE_ACCESS_KEY is present."""
+    def _init_openwakeword(self):
+        """Initialize openWakeWord for fast wake word detection."""
+        if OwwModel is None:
+            print("openWakeWord not available; using Whisper-based wake word detection.", flush=True)
+            return
+        
         try:
-            # Settings.json should take priority, but allow env var as fallback.
-            access_key = (getattr(self, 'picovoice_access_key', '') or os.getenv('PICOVOICE_ACCESS_KEY') or '').strip()
-            if not access_key:
-                self._porcupine = None
-                self._porcupine_frame_bytes = None
-                return
-            if pvporcupine is None:
-                print("PICOVOICE_ACCESS_KEY set but pvporcupine is not installed; falling back to Whisper wake word.", flush=True)
-                return
-
-            # Map the configured wake word to a Porcupine built-in keyword.
-            # If the wake word isn't supported, default to 'computer'.
-            kw = (self.wake_word or 'computer').strip().lower()
-            supported = {
-                'computer': 'computer',
-                'jarvis': 'jarvis',
-                'bumblebee': 'bumblebee',
-                'picovoice': 'picovoice',
+            # Download models if not present
+            openwakeword.utils.download_models()
+            
+            # Map wake word to available openWakeWord models
+            # Available: alexa, hey_jarvis, hey_mycroft, hey_rhasspy, etc.
+            kw = (self.wake_word or 'hey jarvis').strip().lower()
+            model_map = {
                 'alexa': 'alexa',
-                'hey google': 'hey google',
+                'jarvis': 'hey_jarvis',
+                'hey jarvis': 'hey_jarvis',
+                'mycroft': 'hey_mycroft',
+                'hey mycroft': 'hey_mycroft',
+                'computer': 'hey_mycroft',  # Fallback
             }
-            porcupine_kw = supported.get(kw, 'computer')
-
-            self._porcupine = pvporcupine.create(access_key=access_key, keywords=[porcupine_kw])
-            self._porcupine_frame_bytes = int(self._porcupine.frame_length) * 2  # int16
-            print(f"Porcupine enabled (keyword='{porcupine_kw}', frame_length={self._porcupine.frame_length})", flush=True)
+            model_name = model_map.get(kw, 'hey_jarvis')
+            
+            self._oww_model = OwwModel(
+                wakeword_models=[model_name],
+                inference_framework='tflite',
+            )
+            print(f"openWakeWord enabled (model='{model_name}')", flush=True)
         except Exception as e:
-            self._porcupine = None
-            self._porcupine_frame_bytes = None
-            print(f"Porcupine init error; falling back to Whisper wake word: {e}", flush=True)
+            self._oww_model = None
+            print(f"openWakeWord init error; using Whisper fallback: {e}", flush=True)
 
     def _stop_audio_stream_for_playback(self):
         """Stop capture stream to avoid blocking playback on some USB devices."""
@@ -374,9 +374,6 @@ class VoiceAssistant:
         
         # Wake word from settings (portal) takes priority
         self.wake_word = (settings.get('wake_word') or os.getenv('WAKE_WORD') or 'jetson').strip().lower()
-
-        # Porcupine access key (portal) takes priority
-        self.picovoice_access_key = (settings.get('picovoice_access_key') or '').strip()
 
         self.whisper_mode = (settings.get('whisper_mode') or os.getenv('WHISPER_MODE') or 'local').strip().lower()
         self.whisper_model_size = (settings.get('whisper_model_size') or os.getenv('WHISPER_MODEL_SIZE') or 'small').strip()
@@ -413,7 +410,6 @@ class VoiceAssistant:
                 os.unlink(self._reload_signal_path)
                 print("Reload signal detected, reloading settings...", flush=True)
                 old_wake_word = self.wake_word
-                old_pv_key = getattr(self, 'picovoice_access_key', '')
                 old_whisper_mode = getattr(self, 'whisper_mode', None)
                 old_whisper_model_size = getattr(self, 'whisper_model_size', None)
                 self._load_settings()
@@ -426,17 +422,6 @@ class VoiceAssistant:
                     self._init_whisper_model()
                 if old_wake_word != self.wake_word:
                     self.speak(f"Wake word changed to {self.wake_word}")
-
-                # Re-init Porcupine if wake word or key changed
-                if old_wake_word != self.wake_word or old_pv_key != getattr(self, 'picovoice_access_key', ''):
-                    try:
-                        if self._porcupine is not None:
-                            self._porcupine.delete()
-                    except Exception:
-                        pass
-                    self._porcupine = None
-                    self._porcupine_frame_bytes = None
-                    self._init_porcupine()
             except Exception as e:
                 print(f"Error reloading settings: {e}", flush=True)
 
@@ -703,34 +688,38 @@ class VoiceAssistant:
         If muted (silent audio), returns (False, None) and updates mute state
         """
         try:
-            # Preferred: Porcupine keyword spotting (does not rely on Whisper transcription)
-            if self._porcupine is not None and self._porcupine_frame_bytes:
-                frame_bytes = self._audio_stream.read_bytes(self._porcupine_frame_bytes, timeout_seconds=2.0)
-
+            # Preferred: openWakeWord for fast, low-latency detection
+            if self._oww_model is not None:
+                frame_bytes = self._audio_stream.read_bytes(
+                    self._oww_frame_size * 2,  # 16-bit = 2 bytes per sample
+                    timeout_seconds=2.0
+                )
+                
                 now = time.time()
                 if now - self._last_noise_log_ts >= 2.0:
                     amp = get_audio_amplitude(frame_bytes)
                     print(f"Audio amplitude max={amp}", flush=True)
                     self._last_noise_log_ts = now
-
-                # Update mute status for portal, and skip processing if muted
+                
+                # Check mute status
                 if self.check_and_update_mute_status(frame_bytes):
                     return False, None
-
+                
+                # Convert to int16 numpy array for openWakeWord
                 pcm = np.frombuffer(frame_bytes, dtype=np.int16)
-                if len(pcm) != self._porcupine.frame_length:
-                    if len(pcm) < self._porcupine.frame_length:
-                        pcm = np.pad(pcm, (0, self._porcupine.frame_length - len(pcm)), mode='constant')
-                    else:
-                        pcm = pcm[: self._porcupine.frame_length]
-
-                keyword_index = self._porcupine.process(pcm.tolist())
-                if keyword_index >= 0:
-                    print("Wake word detected (Porcupine)", flush=True)
-                    return True, None
-
+                
+                # openWakeWord expects chunks of 1280 samples (80ms at 16kHz)
+                prediction = self._oww_model.predict(pcm)
+                
+                # Check if any wake word exceeded threshold
+                for model_name, score in prediction.items():
+                    if score > 0.5:  # Threshold
+                        print(f"Wake word detected (openWakeWord: {model_name}, score={score:.3f})", flush=True)
+                        return True, None
+                
                 return False, None
-
+            
+            # Fallback: Whisper-based wake word detection
             audio_samples, raw_bytes = self._record_audio()
 
             now = time.time()

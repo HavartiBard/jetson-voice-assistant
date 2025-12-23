@@ -1215,25 +1215,6 @@ def settings():
     <div class="form-group">
       <div class="form-row">
         <div>
-          <label for="picovoice_access_key">Picovoice Access Key (Porcupine)</label>
-          <input id="picovoice_access_key" name="picovoice_access_key" type="password" value="{{ s.get('picovoice_access_key', '') }}" placeholder="pv_..." />
-          <div class="hint">Optional. Enables Porcupine wake word detection. Get a free key at <a href="https://console.picovoice.ai/" target="_blank">console.picovoice.ai →</a></div>
-        </div>
-        <div>
-          <label>Porcupine Engine (pvporcupine)</label>
-          <div id="porcupine-status" class="time-badge">Checking…</div>
-          <div class="hint" id="porcupine-detail">—</div>
-          <div style="margin-top: 10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-            <button type="button" class="btn btn-secondary" onclick="refreshPorcupineStatus()">↻ Refresh</button>
-          </div>
-          <div class="hint">To install: <code>pip install -U pvporcupine</code> (then restart <code>voice-assistant.service</code>).</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="form-group">
-      <div class="form-row">
-        <div>
           <label for="wake_word">Wake Word</label>
           <input id="wake_word" name="wake_word" value="{{ s['wake_word'] }}" />
           <div class="hint">Trigger word to activate the assistant</div>
@@ -1344,30 +1325,6 @@ def settings():
 function esc2(s) {
   return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
-
-async function refreshPorcupineStatus() {
-  const badge = document.getElementById('porcupine-status');
-  const detail = document.getElementById('porcupine-detail');
-  try {
-    badge.textContent = 'Checking…';
-    detail.textContent = '—';
-    const resp = await fetch('/api/porcupine/status');
-    const data = await resp.json();
-    if (!data.success) throw new Error(data.error || 'Failed');
-    if (data.installed) {
-      badge.textContent = 'Installed';
-      detail.textContent = 'Version: ' + (data.version || 'unknown');
-    } else {
-      badge.textContent = 'Not installed';
-      detail.textContent = data.error || 'pvporcupine not found in current venv';
-    }
-  } catch (e) {
-    badge.textContent = 'Unknown';
-    detail.textContent = 'Error: ' + e.message;
-  }
-}
-
-refreshPorcupineStatus();
 </script>
 """,
         s=s,
@@ -1398,12 +1355,8 @@ def save_settings_route():
     api_key_from_form = request.form.get("openai_api_key", "").strip()
     api_key = api_key_from_form if api_key_from_form else current.get("openai_api_key", "")
 
-    pv_key_from_form = request.form.get("picovoice_access_key", "").strip()
-    pv_key = pv_key_from_form if pv_key_from_form else current.get("picovoice_access_key", "")
-
     new_settings = {
         "openai_api_key": api_key,
-        "picovoice_access_key": pv_key,
         "wake_word": (request.form.get("wake_word") or current.get("wake_word", "jetson")).strip(),
         "whisper_mode": (request.form.get("whisper_mode") or current.get("whisper_mode", "local")).strip().lower(),
         "whisper_model_size": (request.form.get("whisper_model_size") or current.get("whisper_model_size", "small")).strip(),
@@ -2106,34 +2059,6 @@ def api_devices_state():
             "output": output_state,
         }
     )
-
-
-@app.get("/api/porcupine/status")
-def api_porcupine_status():
-    try:
-        try:
-            from importlib import metadata
-        except Exception:
-            metadata = None
-
-        version = None
-        if metadata is not None:
-            try:
-                version = metadata.version("pvporcupine")
-            except Exception:
-                version = None
-
-        # Import check is the authoritative answer for runtime.
-        try:
-            import pvporcupine  # noqa: F401
-
-            installed = True
-        except Exception as e:
-            return jsonify({"success": True, "installed": False, "version": version, "error": str(e)[:200]})
-
-        return jsonify({"success": True, "installed": installed, "version": version})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)[:200]})
 
 
 @app.post("/api/audio/output/volume")
