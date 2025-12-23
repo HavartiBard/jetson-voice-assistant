@@ -44,7 +44,9 @@ WORKDIR /app
 # Install Python dependencies first (better layer caching)
 COPY --chown=assistant:assistant requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    # Fix openWakeWord resources permissions for non-root user
+    chmod -R a+rw /usr/local/lib/python3.10/site-packages/openwakeword/resources 2>/dev/null || true
 
 # Copy application code
 COPY --chown=assistant:assistant src/ ./src/
