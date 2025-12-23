@@ -1,0 +1,82 @@
+# Jetson Voice Assistant - Docker Compose Configuration
+#
+# Usage:
+#   docker-compose up -d              # Start all services
+#   docker-compose logs -f assistant  # View assistant logs
+#   docker-compose down               # Stop all services
+#
+# Audio device passthrough requires the host ALSA device.
+# Adjust AUDIO_INPUT_DEVICE and AUDIO_OUTPUT_DEVICE as needed.
+
+services:
+  assistant:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: voice-assistant
+    restart: unless-stopped
+    
+    # Audio hardware access
+    devices:
+      - /dev/snd:/dev/snd
+    group_add:
+      - audio
+    
+    # Environment configuration
+    env_file:
+      - .env
+    environment:
+      # Audio device - adjust based on your hardware
+      # Run 'arecord -l' on host to find your device
+      - AUDIO_INPUT_DEVICE=${AUDIO_INPUT_DEVICE:-hw:0,0}
+      - AUDIO_OUTPUT_DEVICE=${AUDIO_OUTPUT_DEVICE:-plughw:0,0}
+      # Whisper settings
+      - WHISPER_MODE=${WHISPER_MODE:-local}
+      - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-small}
+      - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-en}
+    
+    # Persistent storage
+    volumes:
+      - ./config:/app/config
+      - ./models:/app/models
+      # Optional: mount .env directly if not using env_file
+      # - ./.env:/app/.env:ro
+    
+    # Network for portal access
+    networks:
+      - voice-net
+    
+    # Resource limits (optional, adjust for your Jetson model)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 2G
+
+  portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: voice-assistant-portal
+    restart: unless-stopped
+    command: ["python", "src/admin_portal.py"]
+    
+    env_file:
+      - .env
+    
+    # Shared config with assistant
+    volumes:
+      - ./config:/app/config
+    
+    # Expose admin portal
+    ports:
+      - "8080:8080"
+    
+    networks:
+      - voice-net
+    
+    depends_on:
+      - assistant
+
+networks:
+  voice-net:
+    driver: bridge
