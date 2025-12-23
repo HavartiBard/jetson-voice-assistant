@@ -35,8 +35,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Create app user (non-root for security, but in audio group)
 RUN groupadd -r assistant && \
-    useradd -r -g assistant -G audio assistant && \
-    mkdir -p /app /app/config /app/models && \
+    useradd -r -g assistant -G audio -d /app assistant && \
+    mkdir -p /app /app/config /app/models /app/.cache && \
     chown -R assistant:assistant /app
 
 WORKDIR /app
@@ -57,6 +57,8 @@ RUN mkdir -p /app/config && chown -R assistant:assistant /app/config
 USER assistant
 
 # Default environment variables (can be overridden)
+ENV HOME=/app
+ENV HF_HOME=/app/models
 ENV WHISPER_MODE=local
 ENV WHISPER_MODEL_SIZE=small
 ENV WHISPER_LANGUAGE=en
