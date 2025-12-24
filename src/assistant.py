@@ -58,9 +58,14 @@ class PersistentAudioStream:
         """Start the persistent arecord process and reader thread."""
         self._running = True
         
+        # Use plughw: for automatic sample rate conversion if hw: is specified
+        capture_device = self.device
+        if capture_device.startswith('hw:'):
+            capture_device = capture_device.replace('hw:', 'plughw:', 1)
+        
         cmd = [
             'arecord',
-            '-D', self.device,
+            '-D', capture_device,
             '-f', 'S16_LE',
             '-r', str(self.sample_rate),
             '-c', str(self.channels),
