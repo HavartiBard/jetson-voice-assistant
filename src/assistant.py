@@ -720,10 +720,10 @@ class VoiceAssistant:
                 # openWakeWord expects chunks of 1280 samples (80ms at 16kHz)
                 prediction = self._oww_model.predict(pcm)
                 
-                # Debug: log scores above 0.1 to see if model is responding
+                # Debug: log scores above 0.01 to see if model is responding
                 for model_name, score in prediction.items():
-                    if score > 0.1:
-                        print(f"openWakeWord score: {model_name}={score:.3f}", flush=True)
+                    if score > 0.01:
+                        print(f"openWakeWord score: {model_name}={score:.4f}", flush=True)
                 
                 # Check if any wake word exceeded threshold
                 for model_name, score in prediction.items():
