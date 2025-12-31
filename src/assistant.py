@@ -259,6 +259,9 @@ class VoiceAssistant:
         )
         self._audio_stream_device = self._capture_device
         
+        # Set audio volume to maximum on startup (fixes volume reset issue)
+        self._init_audio_volume()
+        
         # Hardware mute state tracking with hysteresis
         self._last_mute_state = False
         self._mute_announced = False
@@ -346,6 +349,29 @@ class VoiceAssistant:
         except Exception as e:
             self._oww_model = None
             print(f"openWakeWord init error; using Whisper fallback: {e}", flush=True)
+
+    def _init_audio_volume(self):
+        """Set audio volume to maximum on startup to fix volume reset issues."""
+        try:
+            # Extract card number from device (e.g., "hw:4,0" -> "4")
+            device = self._capture_device
+            if device.startswith(('hw:', 'plughw:')):
+                card_num = device.split(':')[1].split(',')[0]
+                # Try to set volume to 100% using amixer
+                result = subprocess.run(
+                    ['amixer', '-c', card_num, 'sset', 'Anker PowerConf S330', '100%'],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    print(f"Audio volume set to 100% on card {card_num}", flush=True)
+                else:
+                    # Try generic control names
+                    subprocess.run(
+                        ['amixer', '-c', card_num, 'sset', 'Capture', '100%'],
+                        capture_output=True, timeout=5
+                    )
+        except Exception as e:
+            print(f"Could not set audio volume: {e}", flush=True)
 
     def _stop_audio_stream_for_playback(self):
         """Stop capture stream to avoid blocking playback on some USB devices."""
@@ -733,7 +759,7 @@ class VoiceAssistant:
                 
                 # Check if any wake word exceeded threshold
                 for model_name, score in prediction.items():
-                    if score > 0.5:  # Threshold
+                    if score > 0.3:  # Threshold (lowered from 0.5 for better detection)
                         print(f"Wake word detected (openWakeWord: {model_name}, score={score:.3f})", flush=True)
                         # Reset model state to prevent repeated detections
                         self._oww_model.reset()
